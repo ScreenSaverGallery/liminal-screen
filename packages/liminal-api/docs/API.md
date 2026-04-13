@@ -49,42 +49,42 @@ Retrieves the current application options.
 ```typescript
 interface LiminalOptions {
   /** Time in minutes before screensaver starts */
-  starts_in: number;
+  startsIn: number;
 
   /** Time in minutes before display turns off */
-  display_off_in: number;
+  displayOffIn: number;
 
   /** Time in minutes before password is required */
-  require_pass_in: number;
+  requirePassIn: number;
 
   /** Whether to run on battery power */
-  run_on_battery: boolean;
+  runOnBattery: boolean;
 
   /** Debug mode enabled */
   debug: boolean;
 
   /** Main screensaver URL */
-  saver_url: string;
+  saverUrl: string;
 
   /** Debug screensaver URL */
-  saver_url_debug: string;
+  saverUrlDebug: string;
 
   /** Options page URL */
-  options_url: string;
+  optionsUrl: string;
 }
 ```
 
 **Example Response**:
 ```json
 {
-  "starts_in": 0.2,
-  "display_off_in": 1.0,
-  "require_pass_in": 1.0,
-  "run_on_battery": false,
+  "startsIn": 0.2,
+  "displayOffIn": 1.0,
+  "requirePassIn": 1.0,
+  "runOnBattery": false,
   "debug": false,
-  "saver_url": "https://save.screensaver.gallery",
-  "saver_url_debug": "https://save.screensaver.gallery/debug",
-  "options_url": "http://localhost:3000/options"
+  "saverUrl": "https://save.screensaver.gallery",
+  "saverUrlDebug": "https://save.screensaver.gallery/debug",
+  "optionsUrl": "http://localhost:3000/options"
 }
 ```
 
@@ -100,7 +100,7 @@ Updates the application options.
 **Example**:
 ```javascript
 await liminalAPI.setOptions({
-  starts_in: 0.5,
+  startsIn: 0.5,
   debug: true
 });
 ```
@@ -150,7 +150,7 @@ All API methods may throw `LiminalAPIError` exceptions:
 
 ```javascript
 try {
-  await liminalAPI.setOptions({ starts_in: 0.5 });
+  await liminalAPI.setOptions({ startsIn: 0.5 });
 } catch (error) {
   if (error instanceof LiminalAPIError) {
     console.error("API Error:", error.message);
@@ -199,18 +199,18 @@ window.addEventListener('liminal-options-update', (event) => {
 
     // Load current options
     const options = await liminalAPI.getOptions();
-    document.getElementById('starts-in').value = options.starts_in;
+    document.getElementById('starts-in').value = options.startsIn;
 
     // Handle form submission
     document.getElementById('options-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const startsIn = parseFloat(document.getElementById('starts-in').value);
-      await liminalAPI.setOptions({ starts_in: startsIn });
+      await liminalAPI.setOptions({ startsIn: startsIn });
     });
 
     // Listen for updates from main app
     liminalAPI.onOptionsUpdate((options) => {
-      document.getElementById('starts-in').value = options.starts_in;
+      document.getElementById('starts-in').value = options.startsIn;
     });
   </script>
 </body>

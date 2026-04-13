@@ -52,13 +52,13 @@ Here's a minimal example to get started:
 
         // Load current options
         const options = await liminalAPI.getOptions();
-        document.getElementById('starts-in').value = options.starts_in;
+        document.getElementById('starts-in').value = options.startsIn;
 
         // Handle form submission
         document.getElementById('options-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const startsIn = parseFloat(document.getElementById('starts-in').value);
-            await liminalAPI.setOptions({ starts_in: startsIn });
+            await liminalAPI.setOptions({ startsIn: startsIn });
         });
     </script>
 </body>
@@ -91,14 +91,14 @@ console.log(options);
 **Response Structure:**
 ```typescript
 {
-  starts_in: number;        // Time in minutes before screensaver starts
-  display_off_in: number;   // Time in minutes before display turns off
-  require_pass_in: number;  // Time in minutes before password required
-  run_on_battery: boolean;  // Whether to run on battery power
-  debug: boolean;           // Debug mode enabled
-  saver_url: string;        // Main screensaver URL
-  saver_url_debug: string;  // Debug screensaver URL
-  options_url: string;      // Options page URL
+  startsIn: number;        // Time in minutes before screensaver starts
+  displayOffIn: number;    // Time in minutes before display turns off
+  requirePassIn: number;  // Time in minutes before password required
+  runOnBattery: boolean;  // Whether to run on battery power
+  debug: boolean;          // Debug mode enabled
+  saverUrl: string;        // Main screensaver URL
+  saverUrlDebug: string;  // Debug screensaver URL
+  optionsUrl: string;      // Options page URL
 }
 ```
 
@@ -108,7 +108,7 @@ Update application options:
 
 ```javascript
 await liminalAPI.setOptions({
-  starts_in: 0.5,
+  startsIn: 0.5,
   debug: true
 });
 ```
@@ -146,6 +146,14 @@ const unsubscribe = liminalAPI.onOptionsUpdate((options) => {
 unsubscribe();
 ```
 
+### Cleanup
+
+When you're done using the API, call `destroy()` to clean up all listeners:
+
+```javascript
+liminalAPI.destroy();
+```
+
 ## Environment Detection
 
 The API automatically detects the environment:
@@ -166,7 +174,7 @@ All API methods may throw `LiminalAPIError`:
 
 ```javascript
 try {
-  await liminalAPI.setOptions({ starts_in: 0.5 });
+  await liminalAPI.setOptions({ startsIn: 0.5 });
 } catch (error) {
   if (error instanceof LiminalAPIError) {
     console.error("API Error:", error.message);
@@ -191,7 +199,7 @@ const options = await liminalAPI.getOptions();
 
 ```javascript
 try {
-  await liminalAPI.setOptions({ starts_in: newValue });
+  await liminalAPI.setOptions({ startsIn: newValue });
   showSuccess("Settings saved!");
 } catch (error) {
   showError("Failed to save settings");
@@ -215,7 +223,7 @@ if (isNaN(startsIn) || startsIn < 0.1) {
 showLoading(true);
 
 try {
-  await liminalAPI.saveOptions(formData);
+  await liminalAPI.setOptions(formData);
   showSuccess("Settings saved!");
 } catch (error) {
   showError(error.message);

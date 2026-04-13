@@ -68,7 +68,7 @@ const authToken = liminalAPI.generateAuthToken();
 
 // Use token with API calls
 await liminalAPI.setOptions({
-  starts_in: 0.5,
+  startsIn: 0.5,
   debug: true
 }, authToken);
 ```
@@ -78,8 +78,8 @@ await liminalAPI.setOptions({
 ### Token Generation
 
 1. **Timestamp Creation**: Current timestamp is captured
-2. **Nonce Generation**: Random nonce prevents replay attacks
-3. **Signature Creation**: HMAC signature using shared secret
+2. **Nonce Generation**: Cryptographically secure random nonce prevents replay attacks
+3. **Signature Creation**: HMAC-SHA256 signature using shared secret via `crypto.subtle`
 4. **Token Assembly**: Combined into verifiable token format
 
 ### Token Validation
@@ -131,9 +131,12 @@ await liminalAPI.setOptions({
 // secure-options.html
 import { liminalAPI } from '@liminal-screen/api';
 
-// Configure security (typically from environment variables)
+// Configure security — use a safe pattern that works in browsers too
 liminalAPI.configureSecurity({
-  sharedSecret: process.env.LIMINAL_API_SECRET,
+  sharedSecret:
+    typeof process !== 'undefined' && process.env
+      ? process.env.LIMINAL_API_SECRET
+      : undefined,
   requireAuth: true
 });
 
@@ -141,20 +144,14 @@ async function initializeSecureOptions() {
   try {
     // Initialize with security
     await liminalAPI.init();
-    
-    // Check security status
-    const securityStatus = liminalAPI.securityManager.getSecurityStatus();
-    if (!securityStatus.enabled) {
-      console.warn('Security not enabled - operating in demo mode');
-    }
-    
+
     // Load options with authentication
     const authToken = liminalAPI.generateAuthToken();
     const options = await liminalAPI.getOptions(authToken);
-    
+
     // Update UI with options
     updateOptionsForm(options);
-    
+
   } catch (error) {
     if (error.name === 'LiminalAPIError') {
       console.error('Security error:', error.message);
@@ -167,7 +164,10 @@ async function initializeSecureOptions() {
 async function saveSecureOptions(formData) {
   try {
     const authToken = liminalAPI.generateAuthToken();
-    await liminalAPI.setOptions(formData, authToken);
+    await liminalAPI.setOptions({
+      startsIn: formData.startsIn,
+      debug: formData.debug
+    }, authToken);
     showSuccess('Settings saved securely!');
   } catch (error) {
     if (error.name === 'LiminalAPIError') {
@@ -190,7 +190,7 @@ async function saveSecureOptions(formData) {
 #### "Invalid authentication signature"
 - Verify shared secret matches between client and server
 - Check for typos or encoding issues in the secret
-- Ensure both sides are using the same hashing algorithm
+- Ensure both sides are using the same HMAC-SHA256 algorithm
 
 #### "Authentication token expired"
 - Generate a new token (tokens expire after 1 hour by default)

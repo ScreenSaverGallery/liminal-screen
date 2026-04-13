@@ -2,6 +2,7 @@
   "name": "@liminal-screen/api",
   "version": "0.1.0",
   "description": "API library for Liminal Screen remote options integration",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [

@@ -35,20 +35,40 @@ export interface AuthToken {
 export class SecurityManager {
   private config: Required<SecurityConfig>;
   private activeSessions: Map<string, number> = new Map(); // token -> expiry timestamp
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config?: SecurityConfig) {
     this.config = {
       sharedSecret:
-        config?.sharedSecret || process.env.LIMINAL_API_SECRET || "",
+        config?.sharedSecret ??
+        (typeof process !== "undefined" && process.env
+          ? process.env.LIMINAL_API_SECRET
+          : undefined) ??
+        "",
       requireAuth: config?.requireAuth ?? false,
       sessionTimeout: config?.sessionTimeout || 3600000, // 1 hour default
     };
+
+    // Periodic session cleanup
+    this.cleanupTimer = setInterval(() => {
+      this.cleanupExpiredSessions();
+    }, 60000); // Clean up every minute
+  }
+
+  /**
+   * Destroy the security manager and clean up resources
+   */
+  destroy(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
   }
 
   /**
    * Generate an authentication token
    */
-  generateAuthToken(): AuthToken | null {
+  async generateAuthToken(): Promise<AuthToken | null> {
     if (!this.config.sharedSecret || !this.config.requireAuth) {
       return null;
     }
@@ -56,7 +76,7 @@ export class SecurityManager {
     const timestamp = Date.now();
     const nonce = this.generateNonce();
     const data = `${timestamp}:${nonce}`;
-    const signature = this.createSignature(data);
+    const signature = await this.createSignature(data);
 
     return {
       timestamp,
@@ -68,7 +88,7 @@ export class SecurityManager {
   /**
    * Validate an authentication token
    */
-  validateAuthToken(token: AuthToken): boolean {
+  async validateAuthToken(token: AuthToken): Promise<boolean> {
     if (!this.config.requireAuth) {
       return true; // Authentication not required
     }
@@ -87,7 +107,7 @@ export class SecurityManager {
 
     // Verify signature
     const data = `${token.timestamp}:${token.nonce}`;
-    const expectedSignature = this.createSignature(data);
+    const expectedSignature = await this.createSignature(data);
 
     if (token.signature !== expectedSignature) {
       console.warn("Invalid authentication signature");
@@ -109,38 +129,43 @@ export class SecurityManager {
   }
 
   /**
-   * Create HMAC signature for data
+   * Create HMAC-SHA256 signature for data
    */
-  private createSignature(data: string): string {
+  private async createSignature(data: string): Promise<string> {
     if (!this.config.sharedSecret) {
       throw new Error("No shared secret configured");
     }
 
-    // Simple HMAC-like implementation (in production, use crypto.subtle)
     const encoder = new TextEncoder();
-    const dataBytes = encoder.encode(data);
-    const secretBytes = encoder.encode(this.config.sharedSecret);
-
-    // This is a simplified implementation - in production use proper crypto
-    // For now, we'll use a basic hash-based approach for demonstration
-    const combined = [...dataBytes, ...secretBytes];
-    let hash = 0;
-    for (let i = 0; i < combined.length; i++) {
-      hash = ((hash << 5) - hash + combined[i]) | 0;
-    }
-
-    return hash.toString(16);
+    const keyData = encoder.encode(this.config.sharedSecret);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      keyData,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const signature = await crypto.subtle.sign(
+      "HMAC",
+      key,
+      encoder.encode(data),
+    );
+    return Array.from(new Uint8Array(signature))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
   }
 
   /**
-   * Generate random nonce
+   * Generate cryptographically secure random nonce
    */
   private generateNonce(length: number = 16): string {
+    const bytes = new Uint8Array(length);
+    crypto.getRandomValues(bytes);
     const chars =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let result = "";
     for (let i = 0; i < length; i++) {
-      result += chars.charAt(Math.floor(Math.random() * chars.length));
+      result += chars[bytes[i] % chars.length];
     }
     return result;
   }
@@ -169,12 +194,10 @@ export class SecurityManager {
    */
   getSecurityStatus(): {
     enabled: boolean;
-    hasSecret: boolean;
     sessionTimeout: number;
   } {
     return {
       enabled: this.config.requireAuth,
-      hasSecret: !!this.config.sharedSecret,
       sessionTimeout: this.config.sessionTimeout,
     };
   }
@@ -182,5 +205,3 @@ export class SecurityManager {
 
 // Export singleton instance
 export const securityManager = new SecurityManager();
-
-// Types are already exported as interfaces, no need to export type again
