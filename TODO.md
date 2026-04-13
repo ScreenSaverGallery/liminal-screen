@@ -1,0 +1,4 @@
+- [x] debug preview saver by user click -> it closes immediatelly
+- [ ] remote options api (+ shared key), check, implement to remote secret
+- [ ] implement custom app name and description
+- [ ] remote options not loading (main index.html fallback)

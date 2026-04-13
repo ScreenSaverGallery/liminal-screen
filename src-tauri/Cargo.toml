@@ -1,0 +1,44 @@
+[package]
+name = "liminal-screen"
+version = "0.1.0"
+description = "A system tray screensaver application built with Tauri v2"
+authors = ["tomaszatoo"]
+edition = "2021"
+
+[lib]
+name = "liminal_screen_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "devtools"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+tauri-plugin-store = "2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_System_WinRT",
+    "Win32_System_Power",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_SystemServices",
+    "Win32_Graphics_Gdi",
+    "Win32_Foundation",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.26"
+objc = "0.2.7"
+core-foundation = "0.10"
+core-graphics = "0.25"
+io-kit-sys = "0.5"
+mach2 = "0.6"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0"
+gtk = "0.18"
+glib = "0.22"

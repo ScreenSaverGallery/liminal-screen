@@ -1,0 +1,31 @@
+{
+  "name": "@liminal-screen/api",
+  "version": "0.1.0",
+  "description": "API library for Liminal Screen remote options integration",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/**/*"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "jest"
+  },
+  "keywords": [
+    "liminal-screen",
+    "screensaver",
+    "tauri",
+    "ipc",
+    "api"
+  ],
+  "author": "Liminal Screen Team",
+  "license": "MIT",
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "typescript": "^5.0.0"
+  }
+}

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <link rel="stylesheet" href="/src/styles.css" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Liminal Screen - Options</title>
+        <script type="module" src="/src/main.ts" defer></script>
+    </head>
+
+    <body>
+        <main class="app-container">
+            <header class="app-header">
+                <h1>Liminal Screen</h1>
+                <p class="subtitle">System Tray Screensaver</p>
+            </header>
+
+            <section class="status-section">
+                <div class="status-indicator" id="status-indicator">
+                    <span class="status-dot inactive"></span>
+                    <span class="status-text" id="status-text">Inactive</span>
+                </div>
+                <div class="idle-time" id="idle-time">Idle: 0s</div>
+            </section>
+
+            <section class="options-section">
+                <h2>Settings</h2>
+                <form id="options-form">
+                    <div class="option-item">
+                        <label class="option-label" for="starts-in"
+                            >Start After (minutes):</label
+                        >
+                        <input
+                            type="number"
+                            id="starts-in"
+                            name="startsIn"
+                            min="0.1"
+                            max="60"
+                            step="0.1"
+                            value="0.2"
+                            class="option-input"
+                        />
+                    </div>
+                    <div class="option-item">
+                        <label class="option-label" for="display-off"
+                            >Display Off (minutes):</label
+                        >
+                        <input
+                            type="number"
+                            id="display-off"
+                            name="displayOffIn"
+                            min="0.5"
+                            max="120"
+                            step="0.5"
+                            value="1"
+                            class="option-input"
+                        />
+                    </div>
+                    <div class="option-item checkbox-item">
+                        <label class="option-label" for="run-on-battery"
+                            >Run on Battery:</label
+                        >
+                        <input
+                            type="checkbox"
+                            id="run-on-battery"
+                            name="runOnBattery"
+                            class="option-checkbox"
+                        />
+                    </div>
+                    <div class="option-item checkbox-item">
+                        <label class="option-label" for="debug-mode"
+                            >Debug Mode:</label
+                        >
+                        <input
+                            type="checkbox"
+                            id="debug-mode"
+                            name="debug"
+                            class="option-checkbox"
+                        />
+                    </div>
+                    <div class="form-hint">
+                        <small
+                            >Note: Screensaver URL and Debug URL are configured
+                            via environment variables.</small
+                        >
+                    </div>
+                </form>
+            </section>
+
+            <section class="actions-section">
+                <h2>Actions</h2>
+                <div class="button-row">
+                    <button id="save-btn" class="btn btn-primary">
+                        Save Settings
+                    </button>
+                    <button id="preview-btn" class="btn btn-secondary">
+                        Preview Screensaver
+                    </button>
+                </div>
+                <div class="button-row">
+                    <button id="reset-btn" class="btn btn-danger">
+                        Reset to Defaults
+                    </button>
+                </div>
+            </section>
+
+            <section class="info-section">
+                <h2>About</h2>
+                <p class="info-text">
+                    Liminal Screen runs in your system tray and activates after
+                    a period of inactivity.
+                </p>
+                <p class="info-text">
+                    Use the system tray icon to preview the screensaver or quit
+                    the application.
+                </p>
+                <p class="info-text" id="saver-url-info">
+                    <strong>Screensaver URL:</strong>
+                    <span id="saver-url-display">Not configured</span>
+                </p>
+            </section>
+
+            <footer class="app-footer">
+                <p>v0.1.0</p>
+            </footer>
+        </main>
+    </body>
+</html>
