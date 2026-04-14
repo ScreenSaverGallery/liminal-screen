@@ -4,10 +4,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 import { PowerMonitor, MonitorInfo } from "./app/power-monitor/power-monitor";
 import { Saver, SaverOptions } from "./app/saver/saver";
+import { Preview } from "./app/preview/preview";
 import {
   Storage,
   MandatoryOptions,
@@ -23,7 +23,7 @@ import {
 let isScreensaverActive = false;
 let activeSavers: Saver[] = [];
 
-let previewWindow: WebviewWindow | null = null;
+let previewWindow: Preview | null = null;
 let options: MandatoryOptions | null = null;
 let remoteOptions: RemoteOptions = {};
 let monitoringInterval: number | null = null;
@@ -416,6 +416,7 @@ async function checkIdleState(): Promise<void> {
       if (onBattery) {
         // Don't run screensaver on battery
         if (isScreensaverActive) {
+          console.log("On battery power, deactivating screensaver");
           await deactivateScreensaver();
         }
         return;
@@ -424,10 +425,16 @@ async function checkIdleState(): Promise<void> {
 
     // Handle screensaver activation
     if (idleTime >= startsInSeconds && !isScreensaverActive) {
+      console.log(
+        `User idle for ${idleTime}s >= ${startsInSeconds}s, activating screensaver`,
+      );
       await activateScreensaver();
     }
-    // Handle screensaver deactivation
+    // Handle screensaver deactivation when user becomes active
     else if (idleTime < startsInSeconds && isScreensaverActive) {
+      console.log(
+        `User active (${idleTime}s < ${startsInSeconds}s), deactivating screensaver`,
+      );
       await deactivateScreensaver();
     }
     // Handle display blank
@@ -437,9 +444,18 @@ async function checkIdleState(): Promise<void> {
       !displayOffTimeout
     ) {
       // Schedule display blank
+      console.log(
+        `Extended idle time (${idleTime}s >= ${displayOffInSeconds}s), blanking display`,
+      );
       displayOffTimeout = window.setTimeout(async () => {
         await PowerMonitor.blankScreen();
       }, 0);
+    }
+    // Clear display off timeout when user becomes active
+    else if (idleTime < displayOffInSeconds && displayOffTimeout) {
+      console.log("User became active, clearing display off timeout");
+      clearTimeout(displayOffTimeout);
+      displayOffTimeout = null;
     }
   } catch (error) {
     console.error("Error checking idle state:", error);
@@ -450,7 +466,10 @@ async function checkIdleState(): Promise<void> {
  * Activate the screensaver on all displays
  */
 async function activateScreensaver(): Promise<void> {
-  if (isScreensaverActive) return;
+  if (isScreensaverActive) {
+    console.log("Screensaver already active, skipping activation");
+    return;
+  }
 
   console.log("Activating screensaver...");
 
@@ -464,8 +483,8 @@ async function activateScreensaver(): Promise<void> {
     const monitors = await invoke<MonitorInfo[]>("get_available_monitors");
     console.log("Got monitors:", monitors);
 
-    if (monitors.length === 0) {
-      console.warn("No monitors found");
+    if (!monitors || monitors.length === 0) {
+      console.warn("No monitors found or invalid monitor data");
       return;
     }
 
@@ -481,6 +500,12 @@ async function activateScreensaver(): Promise<void> {
       ? import.meta.env.VITE_SAVER_URL_DEBUG
       : import.meta.env.VITE_SAVER_URL;
     console.log("Base URL for saver:", baseUrl);
+
+    if (!baseUrl) {
+      console.error("No base URL configured for saver");
+      return;
+    }
+
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(remoteOptions)) {
       if (value !== undefined && value !== null) {
@@ -491,6 +516,7 @@ async function activateScreensaver(): Promise<void> {
       ? `${baseUrl}?${params.toString()}`
       : baseUrl || "about:blank";
 
+    console.log(`Creating ${monitors.length} saver windows...`);
     for (const monitor of monitors) {
       console.log("Creating saver for monitor:", monitor);
       const saver = new Saver(
@@ -579,42 +605,21 @@ async function previewScreensaver(): Promise<void> {
 
   // Close existing preview window if open
   if (previewWindow) {
-    try {
-      await previewWindow.close();
-    } catch (error) {
-      console.warn("Could not close existing preview window:", error);
-    }
-    previewWindow = null;
+    await previewWindow.hide();
   }
 
   try {
-    // Create a simple preview window like the main window
-    previewWindow = new WebviewWindow("preview", {
-      url: options?.debug
-        ? import.meta.env.VITE_SAVER_URL_DEBUG
-        : import.meta.env.VITE_SAVER_URL,
-      title: "Screensaver Preview",
-      width: 800,
-      height: 600,
-      resizable: true,
-      decorations: true,
-      visible: true,
-      alwaysOnTop: false,
-      skipTaskbar: false,
-    });
+    // Determine which URL to use based on debug mode
+    const previewUrl = options?.debug
+      ? import.meta.env.VITE_SAVER_URL_DEBUG ||
+        "https://save.screensaver.gallery/debug"
+      : import.meta.env.VITE_SAVER_URL || "https://save.screensaver.gallery";
 
-    console.log("Preview window created");
+    // Create new preview instance (label will be auto-generated)
+    previewWindow = new Preview(previewUrl);
 
-    // NOTE: this does only prevent window to close
-    // previewWindow.onCloseRequested(async () => {
-    //   // event.preventDefault();
-    //   if (previewWindow) {
-    //     previewWindow.close();
-    //     previewWindow = null;
-    //     // Give UI time to respond
-    //     await new Promise((resolve) => setTimeout(resolve, 100));
-    //   }
-    // });
+    // Show the preview window
+    await previewWindow.show();
 
     console.log(
       "Preview window created. Use window.closePreviewWindow() to close it manually if needed.",
@@ -674,6 +679,19 @@ window.addEventListener("DOMContentLoaded", () => {
   // Initialize application
   init();
 });
+
+// Also try to initialize immediately in case DOMContentLoaded doesn't fire for hidden windows
+// This ensures the JavaScript runs even when window is hidden
+try {
+  // This should run even for hidden windows
+  console.log("Liminal Screen immediate initialization attempt");
+  // Don't await this as it might not resolve immediately
+  init().catch((error) => {
+    console.error("Immediate init failed:", error);
+  });
+} catch (error) {
+  console.error("Immediate init threw error:", error);
+}
 
 // Cleanup on page unload
 window.addEventListener("beforeunload", () => {

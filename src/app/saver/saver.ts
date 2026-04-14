@@ -85,6 +85,7 @@ export class Saver {
 
     try {
       // Create window options for fullscreen saver
+      // Include position and size for proper multi-monitor support
       const windowOptions = {
         url: this.url,
         userAgent: `${navigator.userAgent} LiminalSaver/${await getVersion()}`,
@@ -98,6 +99,7 @@ export class Saver {
         title: "saver",
         backgroundColor: "#000000",
         devtools: this.options.debug,
+        // Apply position and size for correct monitor placement
         ...(this.monitorPosition && {
           x: this.monitorPosition.x,
           y: this.monitorPosition.y,
@@ -128,12 +130,11 @@ export class Saver {
               resolved = true;
 
               try {
-                // Set fullscreen and maximize
-                const isFullscreen = await this.webviewWindow.isFullscreen();
-                if (!isFullscreen) {
-                  await this.webviewWindow.setFullscreen(true);
-                  await this.webviewWindow.maximize();
-                }
+                // Set fullscreen mode
+                await this.webviewWindow.setFullscreen(true);
+                
+                // Maximize as backup (some platforms might need this)
+                await this.webviewWindow.maximize();
 
                 // Setup custom navigator properties
                 await this.setupCustomNavigator();
