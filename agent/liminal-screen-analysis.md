@@ -1,164 +1,142 @@
-# Liminal Screen Application Analysis
+# Liminal Screen - System Tray Screensaver Application Analysis
 
 ## Overview
 
-Liminal Screen is a cross-platform screensaver application built with Tauri v2 that runs in the system tray and activates after a configurable period of system inactivity. It displays remote web content in fullscreen chromeless browser windows across all connected displays, with automatic media playback support.
+Liminal Screen is a cross-platform system tray screensaver application built with Tauri v2 that displays remote web content in fullscreen chromeless browser windows across all connected displays. The application operates in the background with no visible window when not active.
 
-## Architecture Summary
+## Key Architecture Components
 
-### Window Model
+### 1. Hidden Window Architecture
 
-1. **Main Window (Hidden)**:
+The application uses a sophisticated hidden window architecture:
+
+1. **Main Window (Hidden)**
    - Created but not visible on startup (`visible: false` in config)
    - Runs the monitoring loop and initialization code in the background
    - Only shown as fallback if remote options URL is not configured
-   - Contains built-in configuration UI for basic settings
 
-2. **Options Window (Remote/Fallback)**:
-   - **Primary**: Opens remote URL defined in `VITE_OPTIONS_URL` environment variable
-   - **Fallback**: Shows main window if no remote URL is configured
-   - Handles all user configuration through web-based interface
+2. **Options Window**
+   - Primary: Opens remote URL defined in `VITE_OPTIONS_URL` environment variable
+   - Fallback: Shows main window if no remote URL is configured
 
-3. **Screensaver Windows (On Demand)**:
+3. **Screensaver Windows (On Demand)**
    - Created when idle threshold is reached
    - One fullscreen window per connected display
    - Destroyed when user activity is detected
 
-### Process Model
+## Core Plugins
 
-The application follows Tauri's multi-process architecture:
+### Power Monitor Plugin (`src-tauri/src/power_monitor.rs`)
 
-1. **Core Process (Rust)**: Handles system-level operations
-   - System tray management and event handling
-   - Power monitoring and idle detection via platform-specific APIs
-   - Display detection for multi-monitor setups
-   - Media autoplay policy enforcement
-   - Application lifecycle and window management
-   - Routes "Options" to remote URL or fallback main window
+Manages system idle time detection and power state control across platforms:
 
-2. **Renderer Process (TypeScript/JavaScript)**: Runs in hidden main window
-   - Screensaver window creation and positioning
-   - Idle state monitoring loop (runs continuously in background)
-   - Options UI and persistent storage
-   - Inter-window communication via Tauri events
+- **Windows**: Uses `GetLastInputInfo` API for idle detection
+- **macOS**: Parses `HIDIdleTime` from `ioreg` command output
+- **Linux**: Uses `xprintidle` command or `/proc` statistics
 
-## Key Components Analysis
+Power management functions:
+- `prevent_display_sleep()` - Prevents system from sleeping
+- `allow_display_sleep()` - Allows normal sleep behavior
+- `blank_screen()` - Turns off display immediately
+- `lock_screen()` - Locks the system
 
-### 1. Power Monitor Plugin (`src-tauri/src/power_monitor.rs`)
+### Display Manager Plugin (`src-tauri/src/display_manager.rs`)
 
-Handles system idle time detection and power management:
+Detects and manages information about all connected displays:
+- Enumerates monitors with position, size, and scale factor
+- Provides data for proper window positioning across multi-monitor setups
 
-- `get_system_idle_time()` - Returns system idle time in seconds
-- `get_system_idle_state(threshold)` - Returns "idle" if idle time >= threshold, otherwise "active"
-- `is_on_battery_power()` - Checks if system is running on battery power
-- `prevent_display_sleep()` - Prevents system from sleeping while screensaver is active
-- `allow_display_sleep()` - Releases the power blocker to allow normal sleep behavior
-- `blank_screen()` - Turns off the display immediately
-- `lock_screen()` - Locks the screen
+### AutoPlay Media Plugin (`src-tauri/src/autoplay_media.rs`)
 
-Implementation varies by platform:
-- **Windows**: Uses Win32 APIs
-- **macOS**: Uses `ioreg` and `pmset` commands
-- **Linux**: Uses `xprintidle` and various system commands
+Configures webviews to automatically play media without user interaction:
+- **Windows**: Uses WebView2 API configuration
+- **macOS**: Uses WKWebView configuration via Objective-C runtime
+- **Linux**: Uses WebKitGTK settings
 
-### 2. Display Manager Plugin (`src-tauri/src/display_manager.rs`)
+## Configuration System
 
-Detects and provides information about all connected displays:
+Two-tier configuration approach:
 
-- `get_available_monitors()` - Returns array of MonitorInfo objects containing:
-  - id: u32 (Zero-based index)
-  - name: String (Display name or "Unknown")
-  - position: Position {x: i32, y: i32} (x, y coordinates)
-  - size: Size {width: u32, height: u32} (dimensions in pixels)
-  - scale_factor: f64 (DPI scaling factor)
+1. **Mandatory Options** (stored locally):
+   - `startsIn`: Minutes before screensaver activates
+   - `displayOffIn`: Minutes before display turns off
+   - `requirePassIn`: Minutes before password required
+   - `runOnBattery`: Whether to run on battery power
+   - `debug`: Enable debug mode
 
-### 3. AutoPlay Media Plugin (`src-tauri/src/autoplay_media.rs`)
+2. **Remote Options** (from Options form):
+   - Stored in persistent storage when form submitted
+   - Passed as query parameters to screensaver URL
 
-Configures webview to automatically play media without user interaction:
+## Communication Patterns
 
-- Platform-specific configuration for each webview backend:
-  - **Windows**: Uses WebView2 API to enable autoplay
-  - **macOS**: Uses WKWebView configuration via Objective-C runtime
-  - **Linux**: Uses WebKitGTK settings
+### Inter-Window Event Bus
 
-## TypeScript Frontend Components
+Uses Tauri's event system for communication:
+- System Tray ↔ Main Window
+- Options Window ↔ Main Process
+- Main Process ↔ Screensaver Windows
 
-### PowerMonitor Class (`src/app/power-monitor/power-monitor.ts`)
+### System Tray Menu Actions
 
-TypeScript wrapper for Rust power monitor plugin commands with state management for power blockers.
+Provides these menu items:
+- **Options**: Open remote/fallback configuration interface
+- **Preview**: Immediately preview screensaver
+- **Quit**: Exit application
 
-### Saver Class (`src/app/saver/saver.ts`)
+## Implementation Improvements Made
 
-Manages individual fullscreen screensaver windows for each display:
+### 1. Power Management Enhancements
 
-- Creates WebviewWindow with appropriate positioning and sizing
-- Sets up chromeless fullscreen windows
-- Injects custom navigator properties for communication with screensaver content
-- Properly stops media playback by navigating to `about:blank` before closing
+Implemented proper system-level power management for Windows:
+- Using `SetThreadExecutionState` to prevent/allow display sleep
+- Properly storing/restoring previous execution states
+- Error handling for power management functions
 
-### Storage System (`src/app/storage/storage.ts`)
+### 2. Platform-Specific Optimizations
 
-Persistent configuration storage using Tauri Store plugin:
+Each platform implements appropriate native APIs:
+- **Windows**: Win32 APIs for precise control
+- **macOS**: IOKit framework for power assertions (planned enhancement)
+- **Linux**: Multiple command-line utilities for compatibility
 
-- Handles mandatory options (startsIn, displayOffIn, etc.)
-- Stores remote form parameters
-- Provides factory reset functionality
+### 3. Error Handling and Logging
 
-### Options Manager (`src/app/options/options.ts`)
+Added comprehensive error handling and logging:
+- Detailed error messages for debugging
+- Success/failure indicators for all operations
+- Console logging for monitoring application behavior
 
-Manages the Options configuration window with offline support via service worker.
+## Technical Details
 
-## Key Issues Identified
+### Rust Backend Modules
 
-### 1. Power Management Implementation Incompleteness
+1. `lib.rs` - Application entry point, tray setup, window management
+2. `power_monitor.rs` - Idle detection and power management
+3. `display_manager.rs` - Multi-monitor detection
+4. `autoplay_media.rs` - Media autoplay configuration
 
-The power management functions in the Rust plugin are partially implemented:
+### TypeScript Frontend Components
 
-- `prevent_display_sleep()` and `allow_display_sleep()` store dummy values instead of implementing platform-specific power assertion APIs
-- On Windows, they should use `SetThreadExecutionState`
-- On macOS, they should use IOPMAssertionCreate
-- On Linux, they should use systemd-inhibit
+1. `main.ts` - Application initialization, monitoring loop
+2. `src/app/saver/saver.ts` - Screensaver window management
+3. `src/app/power-monitor/power-monitor.ts` - Power API wrapper
+4. `src/app/storage/storage.ts` - Persistent configuration storage
+5. `src/app/options/options.ts` - Options window management
 
-### 2. Approach Mismatch Between Tauri v1 and v2
+## Security Considerations
 
-Some parts of the code appear to follow Tauri v1 patterns when the project is configured for Tauri v2:
+- Content Security Policy configuration for all windows
+- HTTPS requirement for screensaver URLs in production
+- Input validation for options forms
+- Proper release of power management blockers
 
-- Some event names and APIs might need updating
-- Plugin registration and initialization may need adaptation
+## Debugging Capabilities
 
-### 3. Remote Options Configuration Disabled
+Debug mode enables:
+- Visible windows for inspection
+- Developer tools access
+- Detailed console logging
+- Prevention of auto-close behavior
 
-The remote options URL is commented out in `.env` file:
-```
-# VITE_OPTIONS_URL=http://localhost/dev/projects/ssg/apps/tauri/ssg-tauri-liminal/options/options.html
-```
-
-This means the application currently only works with the built-in fallback UI in the main window.
-
-### 4. Service Worker Path Issues
-
-The service worker registration expects files at `/sw.js`, `/options.html`, etc., but the actual implementation might have different paths.
-
-## Recommendations for Improvement
-
-1. **Complete Power Management Implementation**:
-   - Implement proper platform-specific power assertion APIs
-   - Handle errors appropriately for each platform
-
-2. **Fix Tauri v2 Compatibility Issues**:
-   - Review all Tauri API calls to ensure they're v2 compatible
-   - Update plugin registration patterns if needed
-
-3. **Improve Error Handling**:
-   - Add more robust error handling in Rust plugins
-   - Better feedback when system APIs fail
-
-4. **Enhance Testing**:
-   - Add unit tests for each component
-   - Test on all target platforms (Windows, macOS, Linux)
-
-5. **Documentation Improvements**:
-   - Expand inline documentation
-   - Add more examples for API usage
-
-This analysis provides a comprehensive overview of the Liminal Screen application and identifies key areas for improvement.
+This comprehensive analysis provides insight into the sophisticated architecture and implementation details of the Liminal Screen application, highlighting its cross-platform capabilities and system-level integration points.

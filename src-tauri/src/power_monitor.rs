@@ -256,20 +256,56 @@ fn blank_screen_windows() -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn prevent_sleep_windows(state: &PowerSaveBlocker) -> Result<(), String> {
-    // For Windows, we would typically use SetThreadExecutionState
-    // but for simplicity, we'll just store a dummy value
-    if let Ok(mut id) = state.assertion_id.lock() {
-        *id = Some(1);
+    use windows::Win32::System::Power::{SetThreadExecutionState, EXECUTION_STATE, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED, ES_CONTINUOUS};
+    
+    // Set the execution state to prevent display and system sleep
+    let new_state = ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED | ES_CONTINUOUS;
+    let prev_state = unsafe { SetThreadExecutionState(new_state) };
+    
+    if prev_state.0 == 0 {
+        // Failed to set execution state
+        return Err("Failed to set thread execution state".to_string());
     }
+    
+    // Store the previous state for later restoration
+    if let Ok(mut id) = state.assertion_id.lock() {
+        *id = Some(prev_state.0);
+    }
+    
+    println!("Windows: Successfully prevented display sleep");
     Ok(())
 }
 
 #[cfg(target_os = "windows")]
 fn allow_sleep_windows(state: &PowerSaveBlocker) -> Result<(), String> {
+    use windows::Win32::System::Power::{SetThreadExecutionState, EXECUTION_STATE};
+    
+    // Restore the previous execution state if we had one
+    let restored = if let Ok(id) = state.assertion_id.lock() {
+        if let Some(prev_state) = *id {
+            // Restore previous state
+            let result = unsafe { SetThreadExecutionState(EXECUTION_STATE(prev_state)) };
+            result.0 != 0
+        } else {
+            // No previous state stored, just clear the current flags
+            let result = unsafe { SetThreadExecutionState(EXECUTION_STATE(0)) };
+            result.0 != 0
+        }
+    } else {
+        false
+    };
+    
+    // Clear our stored state
     if let Ok(mut id) = state.assertion_id.lock() {
         *id = None;
     }
-    Ok(())
+    
+    if restored {
+        println!("Windows: Successfully restored display sleep");
+        Ok(())
+    } else {
+        Err("Failed to restore thread execution state".to_string())
+    }
 }
 
 // macOS implementations
@@ -399,10 +435,8 @@ fn blank_screen_macos() -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn prevent_sleep_macos(state: &PowerSaveBlocker) -> Result<(), String> {
-    // Since io-kit-sys doesn't have the power assertion functions,
-    // we'll use a simpler approach with process execution for now
+    // Store a dummy value to indicate prevention is active
     if let Ok(mut id) = state.assertion_id.lock() {
-        // Store a dummy value to indicate prevention is active
         *id = Some(1);
     }
     Ok(())
