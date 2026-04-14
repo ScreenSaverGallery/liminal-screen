@@ -3,7 +3,7 @@
 
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, emitTo } from "@tauri-apps/api/event";
+import { emit } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 
 /**
@@ -320,7 +320,7 @@ export class Saver {
     }
 
     try {
-      await emitTo(this.label, event, payload);
+      await this.webviewWindow.emit(event, payload);
     } catch (error) {
       console.error(`Failed to emit event to ${this.label}:`, error);
     }
