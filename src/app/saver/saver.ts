@@ -108,9 +108,14 @@ export class Saver {
         }),
       };
 
+      console.log(
+        `Creating WebviewWindow with label: ${this.label}`,
+        windowOptions,
+      );
       // Create the window using Tauri API
       this.webviewWindow = new WebviewWindow(this.label, windowOptions);
 
+      console.log(`Waiting for window ${this.label} to be created...`);
       // Wait for window to be created
       await new Promise<void>((resolve, reject) => {
         let resolved = false;
@@ -118,6 +123,7 @@ export class Saver {
         if (this.webviewWindow) {
           // Listen for window creation
           this.webviewWindow.once("tauri://created", async () => {
+            console.log(`Window ${this.label} created successfully`);
             if (!resolved && this.webviewWindow) {
               resolved = true;
 
@@ -145,6 +151,7 @@ export class Saver {
 
           // Listen for window creation errors
           this.webviewWindow.once("tauri://error", (error) => {
+            console.log(`Error creating window ${this.label}:`, error);
             if (!resolved) {
               resolved = true;
               reject(

@@ -158,7 +158,8 @@ function setupEventListeners(): void {
   });
 
   // Listen for window close events
-  getCurrentWindow().listen("tauri://close-requested", () => {
+  getCurrentWindow().onCloseRequested((event: any) => {
+    event.preventDefault();
     // Hide window instead of closing when running in tray
     getCurrentWindow().hide();
   });
@@ -363,6 +364,7 @@ function startMonitoring(): void {
   }
 
   monitoringInterval = window.setInterval(async () => {
+    console.log("Monitoring interval triggered");
     await checkIdleState();
   }, MONITORING_INTERVAL_MS);
 
@@ -384,6 +386,8 @@ function stopMonitoring(): void {
  * Check the current idle state and manage screensaver
  */
 async function checkIdleState(): Promise<void> {
+  console.log("checkIdleState called");
+
   if (!options) {
     console.warn("Options not loaded yet");
     return;
@@ -391,7 +395,9 @@ async function checkIdleState(): Promise<void> {
 
   try {
     // Get idle time in seconds
+    console.log("Calling PowerMonitor.getSystemIdleTime()");
     const idleTime = await PowerMonitor.getSystemIdleTime();
+    console.log("Got idle time:", idleTime);
     const startsInSeconds = options.startsIn * 60;
     const displayOffInSeconds = options.displayOffIn * 60;
 
@@ -449,11 +455,14 @@ async function activateScreensaver(): Promise<void> {
   console.log("Activating screensaver...");
 
   try {
+    console.log("activateScreensaver called, getting monitors...");
     // Prevent display sleep
     await PowerMonitor.preventDisplaySleep();
 
     // Get all monitors - command registered directly without namespace
+    console.log("Getting available monitors...");
     const monitors = await invoke<MonitorInfo[]>("get_available_monitors");
+    console.log("Got monitors:", monitors);
 
     if (monitors.length === 0) {
       console.warn("No monitors found");
@@ -465,11 +474,13 @@ async function activateScreensaver(): Promise<void> {
       debug: options?.debug || false,
       ...remoteOptions,
     };
+    console.log("Using saver options:", saverOptions);
 
     // Build URL with query parameters
     const baseUrl = options?.debug
       ? import.meta.env.VITE_SAVER_URL_DEBUG
       : import.meta.env.VITE_SAVER_URL;
+    console.log("Base URL for saver:", baseUrl);
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(remoteOptions)) {
       if (value !== undefined && value !== null) {
@@ -481,6 +492,7 @@ async function activateScreensaver(): Promise<void> {
       : baseUrl || "about:blank";
 
     for (const monitor of monitors) {
+      console.log("Creating saver for monitor:", monitor);
       const saver = new Saver(
         url,
         `saver-display-${monitor.id}`,
@@ -491,6 +503,7 @@ async function activateScreensaver(): Promise<void> {
         },
         saverOptions,
       );
+      console.log("Saver created, calling show...");
 
       await saver.show();
       activeSavers.push(saver);
@@ -591,6 +604,21 @@ async function previewScreensaver(): Promise<void> {
     });
 
     console.log("Preview window created");
+
+    // NOTE: this does only prevent window to close
+    // previewWindow.onCloseRequested(async () => {
+    //   // event.preventDefault();
+    //   if (previewWindow) {
+    //     previewWindow.close();
+    //     previewWindow = null;
+    //     // Give UI time to respond
+    //     await new Promise((resolve) => setTimeout(resolve, 100));
+    //   }
+    // });
+
+    console.log(
+      "Preview window created. Use window.closePreviewWindow() to close it manually if needed.",
+    );
   } catch (error) {
     console.error("Failed to create preview window:", error);
   }

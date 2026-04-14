@@ -16,7 +16,9 @@ export class PowerMonitor {
    */
   static async getSystemIdleTime(): Promise<number> {
     try {
+      console.log("PowerMonitor: Calling get_system_idle_time");
       const idleTime = await invoke<number>("get_system_idle_time");
+      console.log("PowerMonitor: Got idle time:", idleTime);
       return idleTime;
     } catch (error) {
       console.error("Failed to get system idle time:", error);
