@@ -592,6 +592,180 @@ fn allow_sleep_linux(state: &PowerSaveBlocker) -> Result<(), String> {
     Ok(())
 }
 
+// Direct (non-command) versions of sleep management functions.
+// These can be called from the screensaver engine on the main thread without
+// needing a Tauri command context (i.e. no State<T> parameter).
+
+/// Prevent display sleep - direct call without State wrapper.
+/// Safe to call from the main thread in the screensaver engine.
+pub fn prevent_display_sleep_direct() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        prevent_sleep_windows_direct()
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        prevent_sleep_macos_direct()
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        prevent_sleep_linux_direct()
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        Ok(())
+    }
+}
+
+/// Allow display sleep - direct call without State wrapper.
+/// Safe to call from the main thread in the screensaver engine.
+pub fn allow_display_sleep_direct() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        allow_sleep_windows_direct()
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        allow_sleep_macos_direct()
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        allow_sleep_linux_direct()
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        Ok(())
+    }
+}
+
+// --- Direct platform implementations (no State<PowerSaveBlocker> dependency) ---
+
+#[cfg(target_os = "windows")]
+fn prevent_sleep_windows_direct() -> Result<(), String> {
+    use windows::Win32::System::Power::{SetThreadExecutionState, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED, ES_CONTINUOUS};
+
+    let new_state = ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED | ES_CONTINUOUS;
+    let prev_state = unsafe { SetThreadExecutionState(new_state) };
+
+    if prev_state.0 == 0 {
+        return Err("Failed to set thread execution state".to_string());
+    }
+
+    println!("Windows: Successfully prevented display sleep (direct)");
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn allow_sleep_windows_direct() -> Result<(), String> {
+    use windows::Win32::System::Power::{SetThreadExecutionState, ES_CONTINUOUS};
+
+    // Reset to normal: clear DISPLAY_REQUIRED, keep ES_CONTINUOUS
+    let result = unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
+
+    if result.0 == 0 {
+        return Err("Failed to restore thread execution state".to_string());
+    }
+
+    println!("Windows: Successfully restored display sleep (direct)");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn prevent_sleep_macos_direct() -> Result<(), String> {
+    // Use IOKit power assertion to prevent display sleep
+    // This is the proper macOS way: Create a "PreventUserIdleDisplaySleep" assertion
+    use std::process::Command;
+
+    // Use caffeinate to prevent display sleep (simpler than IOKit FFI)
+    // -d flag prevents display from sleeping
+    let result = Command::new("caffeinate")
+        .args(&["-d", "-w", &std::process::id().to_string()])
+        .spawn();
+
+    match result {
+        Ok(_) => {
+            println!("macOS: Successfully prevented display sleep via caffeinate (direct)");
+            Ok(())
+        }
+        Err(e) => {
+            // Fallback: try pmset
+            let pmset_result = Command::new("bash")
+                .args(&["-c", "caffeinate -d &"])
+                .spawn();
+
+            match pmset_result {
+                Ok(_) => {
+                    println!("macOS: Successfully prevented display sleep via caffeinate fallback (direct)");
+                    Ok(())
+                }
+                Err(e2) => Err(format!("Failed to prevent display sleep: {} / {}", e, e2)),
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn allow_sleep_macos_direct() -> Result<(), String> {
+    // Kill any caffeinate processes we may have spawned
+    use std::process::Command;
+
+    let _ = Command::new("pkill")
+        .args(&["-f", "caffeinate"])
+        .spawn();
+
+    println!("macOS: Allowed display sleep (direct)");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn prevent_sleep_linux_direct() -> Result<(), String> {
+    use std::process::Command;
+
+    // Try systemd-inhibit
+    let result = Command::new("systemd-inhibit")
+        .args(&["--what=idle", "--who=liminal-screen", "--why=Screensaver active", "--mode=block", "sleep", "infinity"])
+        .spawn();
+
+    match result {
+        Ok(_) => {
+            println!("Linux: Successfully prevented display sleep via systemd-inhibit (direct)");
+            Ok(())
+        }
+        Err(e) => {
+            // Fallback: try xdg-screensaver
+            let _ = Command::new("xdg-screensaver")
+                .args(&["suspend", &std::process::id().to_string()])
+                .spawn();
+
+            println!("Linux: Attempted display sleep prevention (direct), error: {}", e);
+            Ok(()) // Don't fail - this is best-effort on Linux
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn allow_sleep_linux_direct() -> Result<(), String> {
+    use std::process::Command;
+
+    // Kill systemd-inhibit if we started it
+    let _ = Command::new("pkill")
+        .args(&["-f", "systemd-inhibit.*liminal-screen"])
+        .spawn();
+
+    let _ = Command::new("xdg-screensaver")
+        .args(&["resume", &std::process::id().to_string()])
+        .spawn();
+
+    println!("Linux: Allowed display sleep (direct)");
+    Ok(())
+}
+
 // Plugin initialization
 pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("power-monitor")

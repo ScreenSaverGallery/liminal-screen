@@ -2,11 +2,10 @@
 // Handles initialization, monitoring loop, and application flow
 
 import { invoke } from "@tauri-apps/api/core";
-import { listen, emit } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { PowerMonitor, MonitorInfo } from "./app/power-monitor/power-monitor";
-import { Saver, SaverOptions } from "./app/saver/saver";
+import { PowerMonitor } from "./app/power-monitor/power-monitor";
 import { Preview } from "./app/preview/preview";
 import {
   Storage,
@@ -19,18 +18,17 @@ import {
   openExternalLink,
 } from "./app/options/options";
 
-// State variables
+// State variables - now mainly for UI state synchronization
 let isScreensaverActive = false;
-let activeSavers: Saver[] = [];
+// let activeSavers: string[] = []; // Not used in autonomous engine - managed by Rust
 
 let previewWindow: Preview | null = null;
 let options: MandatoryOptions | null = null;
-let remoteOptions: RemoteOptions = {};
-let monitoringInterval: number | null = null;
+// let remoteOptions: RemoteOptions = {}; // Managed by Rust engine
 let displayOffTimeout: number | null = null;
 
 // Constants
-const MONITORING_INTERVAL_MS = 1000; // Check every second
+const MONITORING_INTERVAL_MS = 1000; // Check every second for UI updates only
 
 // UI Elements (cached after DOM load)
 let idleTimeElement: HTMLElement | null = null;
@@ -46,7 +44,7 @@ let saverUrlDisplay: HTMLElement | null = null;
  * Initialize the application
  */
 async function init(): Promise<void> {
-  console.log("Liminal Screen - Initializing...");
+  console.log("Liminal Screen - Initializing UI...");
 
   try {
     // Initialize storage first
@@ -59,40 +57,13 @@ async function init(): Promise<void> {
     await loadOptions();
     loadOptionsIntoForm();
 
-    // Send current URLs to Rust backend
-    if (options) {
-      const appOptions = {
-        saver_url:
-          import.meta.env.VITE_SAVER_URL || "https://save.screensaver.gallery",
-        saver_url_debug:
-          import.meta.env.VITE_SAVER_URL_DEBUG ||
-          "https://save.screensaver.gallery/debug",
-        options_url: import.meta.env.VITE_OPTIONS_URL || "",
-        starts_in: options.startsIn,
-        display_off_in: options.displayOffIn,
-        require_pass_in: options.requirePassIn || 1.0,
-        run_on_battery: options.runOnBattery,
-        debug: options.debug,
-      };
-
-      try {
-        await invoke("set_options", { options: appOptions });
-        console.log("Sent app options to Rust backend:", appOptions);
-      } catch (error) {
-        console.error("Failed to send options to Rust backend:", error);
-      }
-    }
-
     // Register service worker for offline support
     await registerServiceWorker();
 
     // Set up event listeners
     setupEventListeners();
 
-    // Start monitoring loop
-    startMonitoring();
-
-    console.log("Liminal Screen - Initialized successfully");
+    console.log("Liminal Screen - UI Initialized successfully");
     console.log("Current options:", options);
   } catch (error) {
     console.error("Failed to initialize application:", error);
@@ -112,7 +83,7 @@ async function loadOptions(): Promise<void> {
       runOnBattery: storedOptions.runOnBattery,
       debug: storedOptions.debug,
     };
-    remoteOptions = storedOptions.remoteOptions || {};
+    // remoteOptions = storedOptions.remoteOptions || {}; // Managed by Rust engine
 
     console.log("Options loaded:", options);
   } catch (error) {
@@ -135,7 +106,7 @@ function setupEventListeners(): void {
   // Listen for options changes
   listen<RemoteOptions>("options-updated", (event) => {
     console.log("Options updated:", event.payload);
-    remoteOptions = event.payload;
+    // remoteOptions = event.payload; // Commented out as it's unused
     updateOptionsDisplay();
   });
 
@@ -164,11 +135,45 @@ function setupEventListeners(): void {
     getCurrentWindow().hide();
   });
 
-  // Listen for saver activity detected (user input in screensaver)
-  listen("saver-activity-detected", async () => {
-    console.log("Saver activity detected, deactivating screensaver");
-    await deactivateScreensaver();
+  // Listen for screensaver started/ended events from Rust engine
+  listen("screensaver-started", async () => {
+    console.log("Screensaver started (from Rust engine)");
+    isScreensaverActive = true;
+    updateStatusDisplay();
   });
+
+  listen("screensaver-ended", async () => {
+    console.log("Screensaver ended (from Rust engine)");
+    isScreensaverActive = false;
+    updateStatusDisplay();
+    
+    // Clear display off timeout
+    if (displayOffTimeout) {
+      clearTimeout(displayOffTimeout);
+      displayOffTimeout = null;
+    }
+  });
+
+  // Periodically sync state with Rust engine (for UI display only)
+  setInterval(async () => {
+    try {
+      const status = await invoke<any>("get_screensaver_status");
+      isScreensaverActive = status.is_active;
+      updateStatusDisplay();
+      
+      // Get idle time for display purposes only
+      if (idleTimeElement) {
+        try {
+          const idleTime = await PowerMonitor.getSystemIdleTime();
+          updateIdleTimeDisplay(idleTime);
+        } catch (e) {
+          console.warn("Failed to get idle time for display:", e);
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to sync with screensaver engine:", e);
+    }
+  }, MONITORING_INTERVAL_MS);
 }
 
 /**
@@ -311,7 +316,7 @@ async function saveOptions(): Promise<void> {
   options.runOnBattery = newRunOnBattery;
   options.debug = newDebug;
 
-  // Save to storage
+  // Save to storage and update Rust backend
   try {
     await Storage.setMandatoryOptions({
       startsIn: options.startsIn,
@@ -320,6 +325,31 @@ async function saveOptions(): Promise<void> {
       runOnBattery: options.runOnBattery,
       debug: options.debug,
     });
+    
+    // Send updated options to Rust backend
+    if (options) {
+      const appOptions = {
+        saver_url:
+          import.meta.env.VITE_SAVER_URL || "https://save.screensaver.gallery",
+        saver_url_debug:
+          import.meta.env.VITE_SAVER_URL_DEBUG ||
+          "https://save.screensaver.gallery/debug",
+        options_url: import.meta.env.VITE_OPTIONS_URL || "",
+        starts_in: options.startsIn,
+        display_off_in: options.displayOffIn,
+        require_pass_in: options.requirePassIn || 1.0,
+        run_on_battery: options.runOnBattery,
+        debug: options.debug,
+      };
+
+      try {
+        await invoke("set_options", { options: appOptions });
+        console.log("Sent app options to Rust backend:", appOptions);
+      } catch (error) {
+        console.error("Failed to send options to Rust backend:", error);
+      }
+    }
+    
     console.log("Options saved successfully");
     alert("Settings saved successfully!");
   } catch (error) {
@@ -356,253 +386,9 @@ function cacheUIElements(): void {
 }
 
 /**
- * Start the idle monitoring loop
- */
-function startMonitoring(): void {
-  if (monitoringInterval) {
-    clearInterval(monitoringInterval);
-  }
-
-  monitoringInterval = window.setInterval(async () => {
-    console.log("Monitoring interval triggered");
-    await checkIdleState();
-  }, MONITORING_INTERVAL_MS);
-
-  console.log("Monitoring started");
-}
-
-/**
- * Stop the idle monitoring loop
- */
-function stopMonitoring(): void {
-  if (monitoringInterval) {
-    clearInterval(monitoringInterval);
-    monitoringInterval = null;
-  }
-  console.log("Monitoring stopped");
-}
-
-/**
- * Check the current idle state and manage screensaver
- */
-async function checkIdleState(): Promise<void> {
-  console.log("checkIdleState called");
-
-  if (!options) {
-    console.warn("Options not loaded yet");
-    return;
-  }
-
-  try {
-    // Get idle time in seconds
-    console.log("Calling PowerMonitor.getSystemIdleTime()");
-    const idleTime = await PowerMonitor.getSystemIdleTime();
-    console.log("Got idle time:", idleTime);
-    const startsInSeconds = options.startsIn * 60;
-    const displayOffInSeconds = options.displayOffIn * 60;
-
-    // Update UI with idle time
-    updateIdleTimeDisplay(idleTime);
-    updateStatusDisplay();
-
-    // Debug: Log idle time and threshold
-    console.log(
-      `Idle: ${idleTime}s, Threshold: ${startsInSeconds}s, Active: ${isScreensaverActive}`,
-    );
-
-    // Check battery status if needed
-    if (!options.runOnBattery) {
-      const onBattery = await PowerMonitor.isOnBatteryPower();
-      if (onBattery) {
-        // Don't run screensaver on battery
-        if (isScreensaverActive) {
-          console.log("On battery power, deactivating screensaver");
-          await deactivateScreensaver();
-        }
-        return;
-      }
-    }
-
-    // Handle screensaver activation
-    if (idleTime >= startsInSeconds && !isScreensaverActive) {
-      console.log(
-        `User idle for ${idleTime}s >= ${startsInSeconds}s, activating screensaver`,
-      );
-      await activateScreensaver();
-    }
-    // Handle screensaver deactivation when user becomes active
-    else if (idleTime < startsInSeconds && isScreensaverActive) {
-      console.log(
-        `User active (${idleTime}s < ${startsInSeconds}s), deactivating screensaver`,
-      );
-      await deactivateScreensaver();
-    }
-    // Handle display blank
-    else if (
-      idleTime >= displayOffInSeconds &&
-      isScreensaverActive &&
-      !displayOffTimeout
-    ) {
-      // Schedule display blank
-      console.log(
-        `Extended idle time (${idleTime}s >= ${displayOffInSeconds}s), blanking display`,
-      );
-      displayOffTimeout = window.setTimeout(async () => {
-        await PowerMonitor.blankScreen();
-      }, 0);
-    }
-    // Clear display off timeout when user becomes active
-    else if (idleTime < displayOffInSeconds && displayOffTimeout) {
-      console.log("User became active, clearing display off timeout");
-      clearTimeout(displayOffTimeout);
-      displayOffTimeout = null;
-    }
-  } catch (error) {
-    console.error("Error checking idle state:", error);
-  }
-}
-
-/**
- * Activate the screensaver on all displays
- */
-async function activateScreensaver(): Promise<void> {
-  if (isScreensaverActive) {
-    console.log("Screensaver already active, skipping activation");
-    return;
-  }
-
-  console.log("Activating screensaver...");
-
-  try {
-    console.log("activateScreensaver called, getting monitors...");
-    // Prevent display sleep
-    await PowerMonitor.preventDisplaySleep();
-
-    // Get all monitors - command registered directly without namespace
-    console.log("Getting available monitors...");
-    const monitors = await invoke<MonitorInfo[]>("get_available_monitors");
-    console.log("Got monitors:", monitors);
-
-    if (!monitors || monitors.length === 0) {
-      console.warn("No monitors found or invalid monitor data");
-      return;
-    }
-
-    // Create saver for each display
-    const saverOptions: SaverOptions = {
-      debug: options?.debug || false,
-      ...remoteOptions,
-    };
-    console.log("Using saver options:", saverOptions);
-
-    // Build URL with query parameters
-    const baseUrl = options?.debug
-      ? import.meta.env.VITE_SAVER_URL_DEBUG
-      : import.meta.env.VITE_SAVER_URL;
-    console.log("Base URL for saver:", baseUrl);
-
-    if (!baseUrl) {
-      console.error("No base URL configured for saver");
-      return;
-    }
-
-    const params = new URLSearchParams();
-    for (const [key, value] of Object.entries(remoteOptions)) {
-      if (value !== undefined && value !== null) {
-        params.append(key, String(value));
-      }
-    }
-    const url = params.toString()
-      ? `${baseUrl}?${params.toString()}`
-      : baseUrl || "about:blank";
-
-    console.log(`Creating ${monitors.length} saver windows...`);
-    for (const monitor of monitors) {
-      console.log("Creating saver for monitor:", monitor);
-      const saver = new Saver(
-        url,
-        `saver-display-${monitor.id}`,
-        { x: monitor.position.x, y: monitor.position.y },
-        {
-          width: monitor.size.width,
-          height: monitor.size.height,
-        },
-        saverOptions,
-      );
-      console.log("Saver created, calling show...");
-
-      await saver.show();
-      activeSavers.push(saver);
-
-      // Register with Rust side
-      await invoke("add_active_saver", {
-        label: `saver-display-${monitor.id}`,
-      });
-    }
-
-    isScreensaverActive = true;
-    console.log(`Screensaver activated on ${monitors.length} display(s)`);
-
-    // Emit event
-    await emit("screensaver-started");
-  } catch (error) {
-    console.error("Failed to activate screensaver:", error);
-    await deactivateScreensaver();
-  }
-}
-
-/**
- * Deactivate the screensaver
- */
-async function deactivateScreensaver(): Promise<void> {
-  if (!isScreensaverActive) return;
-
-  console.log("Deactivating screensaver...");
-
-  try {
-    // Clear display off timeout
-    if (displayOffTimeout) {
-      clearTimeout(displayOffTimeout);
-      displayOffTimeout = null;
-    }
-
-    // Emit screensaver ending event
-    await emit("screensaver-ending");
-
-    // Close all saver windows using the activeSavers array
-    // This is more reliable than using WebviewWindow.getAll()
-    const closePromises = activeSavers.map((saver) => saver.hide());
-    await Promise.allSettled(closePromises);
-
-    // Clear the active savers array
-    activeSavers = [];
-
-    // Clear active savers in Rust
-    await invoke("clear_active_savers");
-
-    // Allow display sleep
-    await PowerMonitor.allowDisplaySleep();
-
-    isScreensaverActive = false;
-
-    console.log("Screensaver deactivated");
-
-    // Emit event
-    await emit("screensaver-ended");
-  } catch (error) {
-    console.error("Failed to deactivate screensaver:", error);
-  }
-}
-
-/**
  * Preview the screensaver (immediate activation)
  */
 async function previewScreensaver(): Promise<void> {
-  if (isScreensaverActive) {
-    console.warn("Screensaver already active");
-    return;
-  }
-
   // Close existing preview window if open
   if (previewWindow) {
     await previewWindow.hide();
@@ -617,7 +403,7 @@ async function previewScreensaver(): Promise<void> {
 
     // Create new preview instance (label will be auto-generated)
     previewWindow = new Preview(previewUrl);
-
+    
     // Show the preview window
     await previewWindow.show();
 
@@ -641,10 +427,15 @@ async function openOptionsWindow(): Promise<void> {
 }
 
 /**
- * Force screensaver deactivation (public API)
+ * Force screensaver deactivation (public API) - calls Rust engine
  */
 export async function forceDeactivateScreensaver(): Promise<void> {
-  await deactivateScreensaver();
+  try {
+    // Tell Rust engine to deactivate
+    await invoke("deactivate_screensaver_command");
+  } catch (error) {
+    console.error("Failed to force deactivate screensaver:", error);
+  }
 }
 
 /**
@@ -692,11 +483,6 @@ try {
 } catch (error) {
   console.error("Immediate init threw error:", error);
 }
-
-// Cleanup on page unload
-window.addEventListener("beforeunload", () => {
-  stopMonitoring();
-});
 
 // Export for global access
 (

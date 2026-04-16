@@ -4,6 +4,7 @@
 pub mod autoplay_media;
 pub mod display_manager;
 pub mod power_monitor;
+pub mod screensaver_engine;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -42,9 +43,10 @@ pub struct AppOptions {
 impl Default for AppOptions {
     fn default() -> Self {
         Self {
-            saver_url: "https://save.screensaver.gallery".to_string(),
+            saver_url: "https://metazoa.org/ssg/dev/".to_string(),
             saver_url_debug: "https://save.screensaver.gallery/debug".to_string(),
-            options_url: "http://localhost/dev/projects/ssg/apps/tauri/ssg-tauri-liminal/options/options.html".to_string(),
+            options_url: "".to_string(),
+            //options_url: "http://localhost/dev/projects/ssg/apps/tauri/ssg-tauri-liminal/options/options.html".to_string(),
             starts_in: 0.2,      // 12 seconds for testing
             display_off_in: 1.0, // 1 minute
             require_pass_in: 1.0,
@@ -71,6 +73,17 @@ fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::err
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         // Window is already created by tauri.conf.json
         let _ = window.set_title("Liminal Screen");
+    }
+
+    // Initialize and start the screensaver engine
+    let engine = screensaver_engine::ScreensaverEngine::new();
+    app.manage(engine.clone());
+
+    // Start engine immediately - this runs independently of JavaScript context
+    if let Err(e) = engine.start_engine(app.handle().clone()) {
+        eprintln!("Failed to start screensaver engine: {}", e);
+    } else {
+        println!("Screensaver engine started successfully");
     }
 
     Ok(())
@@ -199,9 +212,9 @@ fn preview_screensaver<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         .map_err(|e| format!("Failed to emit preview event: {}", e))
 }
 
-/// Command to open options window (remote URL or fallback)
+/// Command to open options window
 #[tauri::command]
-async fn open_options(app: AppHandle) -> Result<(), String> {
+fn open_options(app: AppHandle) -> Result<(), String> {
     open_options_or_fallback(&app)
 }
 
@@ -231,11 +244,44 @@ fn set_options(state: tauri::State<AppState>, options: AppOptions) -> Result<(),
     Ok(())
 }
 
-/// Command to check if screensaver is active
+/// Command to get screensaver engine status
 #[tauri::command]
-fn is_screensaver_active(state: tauri::State<AppState>) -> Result<bool, String> {
-    let active = state.is_screensaver_active.lock().unwrap();
-    Ok(*active)
+fn get_screensaver_status(
+    state: tauri::State<screensaver_engine::ScreensaverEngine>,
+) -> Result<screensaver_engine::ScreensaverStatus, String> {
+    Ok(state.get_status())
+}
+
+/// Command to manually activate screensaver (for preview/testing)
+/// Dispatches activation to the main thread via the engine.
+#[tauri::command]
+fn activate_screensaver_command<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<screensaver_engine::ScreensaverEngine>,
+) -> Result<(), String> {
+    if state.is_active() {
+        println!("Screensaver already active, ignoring manual activation");
+        return Ok(());
+    }
+    // Directly call activate on the main thread (we're already on the main thread
+    // since this is called from a Tauri command handler)
+    state.activate_screensaver(&app)
+}
+
+/// Command to manually deactivate screensaver
+/// Dispatches deactivation to the main thread via the engine.
+#[tauri::command]
+fn deactivate_screensaver_command<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<screensaver_engine::ScreensaverEngine>,
+) -> Result<(), String> {
+    if !state.is_active() {
+        println!("Screensaver not active, ignoring manual deactivation");
+        return Ok(());
+    }
+    // Directly call deactivate on the main thread (we're already on the main thread
+    // since this is called from a Tauri command handler)
+    state.deactivate_screensaver(&app)
 }
 
 /// Command to get active saver window labels
@@ -263,22 +309,18 @@ fn clear_active_savers(state: tauri::State<AppState>) -> Result<(), String> {
 
 /// Command to navigate webview to URL (used to stop media)
 #[tauri::command]
-async fn navigate_webview(app: AppHandle, label: String, url: String) -> Result<(), String> {
+fn navigate_webview(app: AppHandle, label: String, url: String) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(&label) {
         let _ = window.navigate(url.parse().unwrap());
         Ok(())
     } else {
-        Err(format!("Window {} not found", label))
+        Err(format!("Window with label '{}' not found", label))
     }
 }
 
 /// Command to evaluate JavaScript in a webview
 #[tauri::command]
-async fn evaluate_javascript(
-    app: AppHandle,
-    label: String,
-    script: String,
-) -> Result<String, String> {
+fn evaluate_javascript(app: AppHandle, label: String, script: String) -> Result<String, String> {
     if let Some(window) = app.get_webview_window(&label) {
         let _result = window.eval(&script).map_err(|e| e.to_string())?;
         Ok("Executed".to_string())
@@ -287,11 +329,9 @@ async fn evaluate_javascript(
     }
 }
 
-// Acquire application-level power management blocker
+/// Acquire application-level power management blocker (dummy implementation)
 #[tauri::command]
-async fn acquire_app_power_blocker<R: tauri::Runtime>(
-    _app: tauri::AppHandle<R>,
-) -> Result<u32, String> {
+fn acquire_app_power_blocker<R: tauri::Runtime>(_app: tauri::AppHandle<R>) -> Result<u32, String> {
     // Use the existing power monitor command through invoke
     // This will call the public prevent_display_sleep function
     Ok(1) // Return a simple blocker ID
@@ -299,9 +339,7 @@ async fn acquire_app_power_blocker<R: tauri::Runtime>(
 
 /// Release application-level power management blocker
 #[tauri::command]
-async fn release_app_power_blocker<R: tauri::Runtime>(
-    _app: tauri::AppHandle<R>,
-) -> Result<(), String> {
+fn release_app_power_blocker<R: tauri::Runtime>(_app: tauri::AppHandle<R>) -> Result<(), String> {
     // This would call allow_display_sleep when implemented
     Ok(())
 }
@@ -331,12 +369,14 @@ pub fn run() {
             evaluate_javascript,
             open_options,
             navigate_webview,
-            is_screensaver_active,
             add_active_saver,
             clear_active_savers,
             get_active_savers,
             acquire_app_power_blocker,
             release_app_power_blocker,
+            get_screensaver_status,
+            activate_screensaver_command,
+            deactivate_screensaver_command,
             power_monitor::get_system_idle_time,
             power_monitor::get_system_idle_state,
             power_monitor::is_on_battery_power,

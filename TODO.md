@@ -1,3 +1,4 @@
+- [ ] test not on a real 'saver' app, but a minimal video setup (at a time, the most problematic part)
 - [x] debug preview saver by user click -> it closes immediatelly
 - [ ] remote options api (+ shared key), check, implement to remote secret
 - [ ] implement custom app name and description

@@ -1,18 +1,18 @@
 // src-tauri/src/display/display_manager.rs
 use tauri::{command, AppHandle, Runtime};
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, Debug)]
 pub struct Position {
     pub x: i32,
     pub y: i32,
 }
 
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, Debug)]
 pub struct Size {
     pub width: u32,
     pub height: u32,
 }
 
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, Debug)]
 pub struct MonitorInfo {
     pub id: u32,
     pub name: String,
