@@ -192,7 +192,7 @@ fn create_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::error
                 let _ = open_options_or_fallback(app);
             }
             "preview" => {
-                let _ = preview_screensaver(app);
+                let _ = preview_screensaver(app.clone());
             }
             "quit" => {
                 app.exit(0);
@@ -286,7 +286,8 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
 }
 
 /// Preview the screensaver
-fn preview_screensaver<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+#[tauri::command]
+fn preview_screensaver<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     // TODO: Implement token validation when security is enabled
     // Emit event to main window to start preview
     app.emit("preview-screensaver", {})
@@ -484,6 +485,7 @@ pub fn run() {
             factory_reset_options,
             evaluate_javascript,
             open_options,
+            preview_screensaver,
             navigate_webview,
             add_active_saver,
             clear_active_savers,
