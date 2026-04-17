@@ -766,6 +766,56 @@ fn allow_sleep_linux_direct() -> Result<(), String> {
     Ok(())
 }
 
+/// Lock the system - direct call without State wrapper.
+/// Safe to call from the main thread in the screensaver engine.
+pub fn lock_system_direct() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        lock_system_macos_direct()
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        lock_screen_windows()
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        lock_screen_linux()
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        println!("Warning: Lock not implemented for this platform");
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn lock_system_macos_direct() -> Result<(), String> {
+    use std::process::Command;
+
+    // CGSession -suspend triggers the macOS lock screen (requires no special permissions)
+    let cgsession =
+        "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession";
+
+    match Command::new(cgsession).arg("-suspend").spawn() {
+        Ok(_) => {
+            println!("macOS: System locked via CGSession");
+            Ok(())
+        }
+        Err(e) => {
+            // Fallback: sleep the display at minimum
+            println!("CGSession failed ({}), falling back to pmset displaysleepnow", e);
+            Command::new("pmset")
+                .args(&["displaysleepnow"])
+                .spawn()
+                .map_err(|e2| format!("Lock failed — CGSession: {} / pmset: {}", e, e2))?;
+            Ok(())
+        }
+    }
+}
+
 // Plugin initialization
 pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("power-monitor")

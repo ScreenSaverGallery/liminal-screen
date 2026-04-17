@@ -1,9 +1,17 @@
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum ScreensaverState {
+    Idle,
+    ScreensaverActive,
+    DisplayOff,
+    Locked,
+}
 
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct ScreensaverStatus {
@@ -14,8 +22,8 @@ pub struct ScreensaverStatus {
 #[derive(Clone)]
 pub struct ScreensaverEngine {
     is_monitoring: Arc<AtomicBool>,
-    is_active: Arc<AtomicBool>,
-    /// True when an activation/deactivation has been requested but not yet processed
+    state: Arc<Mutex<ScreensaverState>>,
+    /// True when a state transition has been dispatched but not yet completed
     /// on the main thread. Prevents duplicate dispatches.
     pending_transition: Arc<AtomicBool>,
 }
@@ -24,9 +32,20 @@ impl ScreensaverEngine {
     pub fn new() -> Self {
         Self {
             is_monitoring: Arc::new(AtomicBool::new(false)),
-            is_active: Arc::new(AtomicBool::new(false)),
+            state: Arc::new(Mutex::new(ScreensaverState::Idle)),
             pending_transition: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub fn get_state(&self) -> ScreensaverState {
+        *self.state.lock().unwrap()
+    }
+
+    fn set_state(&self, new_state: ScreensaverState) {
+        let mut state = self.state.lock().unwrap();
+        let old_state = *state;
+        *state = new_state;
+        println!("State: {:?} → {:?}", old_state, new_state);
     }
 
     pub fn start_engine<R: tauri::Runtime>(&self, app: AppHandle<R>) -> Result<(), String> {
@@ -39,7 +58,6 @@ impl ScreensaverEngine {
         let engine = self.clone();
         let app_handle = app.clone();
 
-        // Start background monitoring thread
         std::thread::spawn(move || {
             engine.monitoring_loop(app_handle);
         });
@@ -71,109 +89,91 @@ impl ScreensaverEngine {
         &self,
         app: &AppHandle<R>,
     ) -> Result<(), String> {
-        // Get idle time directly (this is safe to call from a background thread -
-        // it only reads system state, does not touch Tauri windows/webviews)
         let idle_time = super::power_monitor::get_system_idle_time()
             .map_err(|e| format!("Failed to get idle time: {}", e))?;
 
-        // Get current options from app state
-        // State access via app.state() is thread-safe (uses internal Arc + Mutex)
         let state = app.state::<super::AppState>();
         let options = state.options.lock().unwrap();
         let starts_in_seconds = (options.starts_in * 60.0) as u64;
         let display_off_seconds = (options.display_off_in * 60.0) as u64;
+        let require_pass_seconds = (options.require_pass_in * 60.0) as u64;
         let run_on_battery = options.run_on_battery;
-        drop(options); // Release lock ASAP
+        drop(options);
 
-        // Check battery status if needed
         if !run_on_battery {
             match super::power_monitor::is_on_battery_power() {
                 Ok(on_battery) => {
                     if on_battery {
-                        // Don't run screensaver on battery - deactivate if active
-                        if self.is_active.load(Ordering::Relaxed) {
-                            self.request_deactivate(app);
+                        if self.get_state() != ScreensaverState::Idle {
+                            if !self.pending_transition.load(Ordering::Relaxed) {
+                                self.request_deactivate(app);
+                            }
                         }
-                        return Ok(()); // Early return when on battery
+                        return Ok(());
                     }
                 }
-                Err(e) => {
-                    println!("Warning: Failed to check battery status: {}", e);
-                }
+                Err(e) => println!("Warning: Failed to check battery status: {}", e),
             }
         }
 
-        let currently_active = self.is_active.load(Ordering::Relaxed);
+        let current_state = self.get_state();
 
-        // Handle activation: idle time exceeded threshold and not yet active
-        if idle_time >= starts_in_seconds && !currently_active {
-            // Only dispatch if no transition is already pending
-            if !self.pending_transition.load(Ordering::Relaxed) {
-                println!(
-                    "Idle threshold reached ({}s >= {}s), requesting activation",
-                    idle_time, starts_in_seconds
-                );
-                self.request_activate(app);
-            } else {
-                println!("Activation already pending, skipping dispatch");
-            }
+        // Skip all checks if a transition is already in flight
+        if self.pending_transition.load(Ordering::Relaxed) {
+            return Ok(());
         }
-        // Handle deactivation: user became active again
-        else if idle_time < starts_in_seconds && currently_active {
-            // Only dispatch if no transition is already pending
-            if !self.pending_transition.load(Ordering::Relaxed) {
-                println!(
-                    "User activity detected ({}s < {}s), requesting deactivation",
-                    idle_time, starts_in_seconds
-                );
-                self.request_deactivate(app);
-            } else {
-                println!("Deactivation already pending, skipping dispatch");
+
+        // === PRIORITY 1: LOCK (Security) ===
+        if require_pass_seconds > 0 && idle_time >= require_pass_seconds {
+            if current_state != ScreensaverState::Locked {
+                self.request_lock(app);
             }
+            return Ok(());
         }
-        // Handle display blank for extended idle
-        else if idle_time >= display_off_seconds && currently_active {
-            match super::power_monitor::blank_screen() {
-                Ok(_) => println!("Display blanked due to extended idle"),
-                Err(e) => println!("Failed to blank display: {}", e),
-            }
+
+        // === PRIORITY 2: DISPLAY OFF (Power Saving) ===
+        if idle_time >= display_off_seconds && current_state != ScreensaverState::DisplayOff {
+            self.request_display_off(app);
+            return Ok(());
+        }
+
+        // === PRIORITY 3: SCREENSAVER ACTIVATION (Visual) ===
+        if idle_time >= starts_in_seconds
+            && current_state == ScreensaverState::Idle
+            && starts_in_seconds < display_off_seconds
+        {
+            self.request_activate(app);
+            return Ok(());
+        }
+
+        // === PRIORITY 4: DEACTIVATION (User Activity) ===
+        if idle_time < starts_in_seconds && current_state != ScreensaverState::Idle {
+            self.request_deactivate(app);
         }
 
         Ok(())
     }
 
-    /// Request activation by dispatching to the main thread.
-    /// This is the CRITICAL fix: all window operations MUST run on the main thread.
     fn request_activate<R: tauri::Runtime>(&self, app: &AppHandle<R>) {
-        // Mark transition as pending to prevent duplicate dispatches
         self.pending_transition.store(true, Ordering::Relaxed);
 
         let engine = self.clone();
         let app = app.clone();
 
-        // Tauri v2: run_on_main_thread schedules the closure on the main event loop.
-        // This is essential because WebviewWindowBuilder::new().build() MUST be called
-        // from the main thread - calling it from a background thread silently fails.
-        // Clone app before calling run_on_main_thread so the method borrows the clone
-        // while the closure moves the original.
         let result = app.clone().run_on_main_thread(move || {
             if let Err(e) = engine.activate_screensaver(&app) {
                 eprintln!("Error activating screensaver on main thread: {}", e);
             }
-            // Clear pending flag regardless of success/failure
             engine.pending_transition.store(false, Ordering::Relaxed);
         });
 
         if let Err(e) = result {
             eprintln!("Failed to dispatch activation to main thread: {}", e);
-            // Clear pending flag since the dispatch failed
             self.pending_transition.store(false, Ordering::Relaxed);
         }
     }
 
-    /// Request deactivation by dispatching to the main thread.
     fn request_deactivate<R: tauri::Runtime>(&self, app: &AppHandle<R>) {
-        // Mark transition as pending to prevent duplicate dispatches
         self.pending_transition.store(true, Ordering::Relaxed);
 
         let engine = self.clone();
@@ -183,15 +183,81 @@ impl ScreensaverEngine {
             if let Err(e) = engine.deactivate_screensaver(&app) {
                 eprintln!("Error deactivating screensaver on main thread: {}", e);
             }
-            // Clear pending flag regardless of success/failure
             engine.pending_transition.store(false, Ordering::Relaxed);
         });
 
         if let Err(e) = result {
             eprintln!("Failed to dispatch deactivation to main thread: {}", e);
-            // Clear pending flag since the dispatch failed
             self.pending_transition.store(false, Ordering::Relaxed);
         }
+    }
+
+    fn request_display_off<R: tauri::Runtime>(&self, app: &AppHandle<R>) {
+        self.pending_transition.store(true, Ordering::Relaxed);
+
+        let engine = self.clone();
+        let app = app.clone();
+
+        let result = app.clone().run_on_main_thread(move || {
+            if let Err(e) = engine.transition_to_display_off(&app) {
+                eprintln!("Error transitioning to display off: {}", e);
+            }
+            engine.pending_transition.store(false, Ordering::Relaxed);
+        });
+
+        if let Err(e) = result {
+            eprintln!("Failed to dispatch display off to main thread: {}", e);
+            self.pending_transition.store(false, Ordering::Relaxed);
+        }
+    }
+
+    fn request_lock<R: tauri::Runtime>(&self, app: &AppHandle<R>) {
+        self.pending_transition.store(true, Ordering::Relaxed);
+
+        let engine = self.clone();
+        let app = app.clone();
+
+        let result = app.clone().run_on_main_thread(move || {
+            let current_state = engine.get_state();
+            if current_state == ScreensaverState::ScreensaverActive {
+                if let Err(e) = engine.close_all_savers(&app) {
+                    eprintln!("Error closing savers before lock: {}", e);
+                }
+                let _ = super::power_monitor::allow_display_sleep_direct();
+            }
+            match super::power_monitor::lock_system_direct() {
+                Ok(_) => {
+                    engine.set_state(ScreensaverState::Locked);
+                    let _ = app.emit("screensaver-locked", ());
+                }
+                Err(e) => {
+                    println!("Failed to lock system: {}", e);
+                    // Set state anyway to prevent re-triggering on every tick
+                    engine.set_state(ScreensaverState::Locked);
+                }
+            }
+            engine.pending_transition.store(false, Ordering::Relaxed);
+        });
+
+        if let Err(e) = result {
+            eprintln!("Failed to dispatch lock to main thread: {}", e);
+            self.pending_transition.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// Transition to display-off state. MUST be called on the main thread.
+    fn transition_to_display_off<R: tauri::Runtime>(&self, app: &AppHandle<R>) -> Result<(), String> {
+        if self.get_state() == ScreensaverState::ScreensaverActive {
+            let _ = super::power_monitor::allow_display_sleep_direct();
+            self.close_all_savers(app)?;
+        }
+        match super::power_monitor::blank_screen() {
+            Ok(_) => {
+                self.set_state(ScreensaverState::DisplayOff);
+            }
+            Err(e) => println!("Failed to blank display: {}", e),
+        }
+        Ok(())
     }
 
     /// Actually activate the screensaver. MUST be called on the main thread.
@@ -199,41 +265,29 @@ impl ScreensaverEngine {
         &self,
         app: &AppHandle<R>,
     ) -> Result<(), String> {
-        // Double-check under "lock" to prevent double-activation
-        if self.is_active.load(Ordering::Relaxed) {
-            println!("Screensaver already active, skipping activation");
+        if self.get_state() != ScreensaverState::Idle {
+            println!("Screensaver not idle, skipping activation");
             return Ok(());
         }
 
         println!("Activating screensaver (main thread)");
 
-        // Prevent display sleep using the direct platform function
         match super::power_monitor::prevent_display_sleep_direct() {
             Ok(_) => println!("Display sleep prevented"),
             Err(e) => println!("Warning: Failed to prevent display sleep: {}", e),
         }
 
-        // Get monitors - this is safe on the main thread
         let monitors = super::display_manager::get_available_monitors(app.clone())
             .map_err(|e| format!("Failed to get monitors: {}", e))?;
 
         println!("Found {} monitors", monitors.len());
 
-        // Create all windows first (positioned, visible, but NOT fullscreen yet).
-        // This gets every window placed on its correct monitor before any
-        // fullscreen transitions begin.
         for monitor in &monitors {
             println!("Creating saver window for monitor {:?}", monitor);
             self.create_saver_window(app, monitor)?;
         }
 
-        // Now stagger the fullscreen transitions. macOS limits one concurrent
-        // fullscreen animation at a time — calling set_fullscreen on two windows
-        // simultaneously causes the second to fail with the "funk" sound.
-        // We use async delays to let each animation complete before starting the next.
-        // The macOS fullscreen animation takes ~500ms, so we wait 600ms between each.
-        // On other platforms (Windows, Linux) set_fullscreen is typically instant,
-        // so this delay is harmless.
+        // Stagger fullscreen transitions — macOS allows only one at a time
         let app_fs = app.clone();
         let window_labels: Vec<String> = monitors
             .iter()
@@ -242,7 +296,6 @@ impl ScreensaverEngine {
         tauri::async_runtime::spawn(async move {
             for (i, label) in window_labels.iter().enumerate() {
                 if i > 0 {
-                    // Wait for previous fullscreen animation to complete
                     tokio::time::sleep(Duration::from_millis(600)).await;
                 }
                 let app_handle = app_fs.clone();
@@ -261,7 +314,7 @@ impl ScreensaverEngine {
             }
         });
 
-        self.is_active.store(true, Ordering::Relaxed);
+        self.set_state(ScreensaverState::ScreensaverActive);
         let _ = app.emit("screensaver-started", ());
         println!("Screensaver activated on {} displays", monitors.len());
         Ok(())
@@ -272,23 +325,24 @@ impl ScreensaverEngine {
         &self,
         app: &AppHandle<R>,
     ) -> Result<(), String> {
-        if !self.is_active.load(Ordering::Relaxed) {
-            println!("Screensaver not active, skipping deactivation");
+        let current_state = self.get_state();
+        if current_state == ScreensaverState::Idle {
+            println!("Already idle, skipping deactivation");
             return Ok(());
         }
 
-        println!("Deactivating screensaver (main thread)");
+        println!("Deactivating screensaver (main thread), state: {:?}", current_state);
 
-        // Allow display sleep using the direct platform function
-        match super::power_monitor::allow_display_sleep_direct() {
-            Ok(_) => println!("Display sleep allowed"),
-            Err(e) => println!("Warning: Failed to allow display sleep: {}", e),
+        if current_state == ScreensaverState::ScreensaverActive {
+            match super::power_monitor::allow_display_sleep_direct() {
+                Ok(_) => println!("Display sleep allowed"),
+                Err(e) => println!("Warning: Failed to allow display sleep: {}", e),
+            }
+            self.close_all_savers(app)?;
         }
+        // For DisplayOff and Locked states: OS handles display/unlock, just reset state
 
-        // Close all saver windows - MUST be on main thread (we are now)
-        self.close_all_savers(app)?;
-
-        self.is_active.store(false, Ordering::Relaxed);
+        self.set_state(ScreensaverState::Idle);
         let _ = app.emit("screensaver-ended", ());
         println!("Screensaver deactivated");
         Ok(())
@@ -301,7 +355,6 @@ impl ScreensaverEngine {
     ) -> Result<(), String> {
         let label = format!("saver-display-{}", monitor.id);
 
-        // Check if a window with this label already exists (prevent duplicates)
         if app.get_webview_window(&label).is_some() {
             println!("Window {} already exists, skipping", label);
             return Ok(());
@@ -319,9 +372,6 @@ impl ScreensaverEngine {
             monitor.size.height
         );
 
-        // Build window with about:blank FIRST - we'll navigate to the real URL
-        // after configuring autoplay. This ensures autoplay is set up before
-        // any media content loads.
         let mut builder = tauri::webview::WebviewWindowBuilder::new(
             app,
             label.clone(),
@@ -334,10 +384,6 @@ impl ScreensaverEngine {
         .visible(false)
         .focused(true);
 
-        // Build window as a borderless, always-on-top window positioned on the
-        // correct monitor. For single-monitor setups, set_fullscreen works fine.
-        // For multi-monitor, the caller (activate_screensaver) will stagger
-        // fullscreen transitions to avoid macOS's one-at-a-time limitation.
         let scale = monitor.scale_factor;
         let logical_x = monitor.position.x as f64 / scale;
         let logical_y = monitor.position.y as f64 / scale;
@@ -359,28 +405,22 @@ impl ScreensaverEngine {
 
         // Configure autoplay BEFORE navigating to the real URL.
         // On macOS, setMediaTypesRequiringUserActionForPlayback must be set
-        // before any media content loads. We call this synchronously and it
-        // completes before we proceed to navigate.
+        // before any media content loads.
         super::autoplay_media::configure_autoplay_for_window(&window);
-        
-        // Small delay to ensure the autoplay configuration has been applied
-        // to the webview before we start loading media content.
+
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        // Navigate to the actual screensaver URL now that autoplay is configured.
         let saver_url: url::Url = url.parse().unwrap();
         match window.navigate(saver_url) {
             Ok(_) => println!("Navigated {} to {}", label, url),
             Err(e) => println!("Warning: Navigation failed for {}: {}", label, e),
         }
 
-        // Show the window — it appears with inner_size covering the monitor.
         match window.show() {
             Ok(_) => println!("Showed window {}", label),
             Err(e) => println!("Warning: Failed to show window {}: {}", label, e),
         }
 
-        // Store reference
         let state = app.state::<super::AppState>();
         state.active_savers.lock().unwrap().push(label.clone());
 
@@ -394,25 +434,18 @@ impl ScreensaverEngine {
 
         println!("Closing {} saver windows", savers.len());
 
-        // Phase 1: Hide + stop all windows (synchronous, on main thread)
+        // Phase 1: Hide + stop all windows synchronously
         for label in savers.clone() {
             if let Some(window) = app.get_webview_window(&label) {
-                // Hide immediately — user sees desktop right away
                 match window.hide() {
                     Ok(_) => println!("Hid window {}", label),
                     Err(e) => println!("Failed to hide window {}: {}", label, e),
                 }
-
-                // Multi-layer stop: JS pause + platform-native stopLoading
                 super::autoplay_media::stop_webview(&window);
             }
         }
 
-        // Phase 2: Close all windows after a delay. We need ~500ms for:
-        // - JS eval to execute and pause all media elements
-        // - stopLoading to propagate through WebKit's pipeline
-        // - CoreAudio to drain already-buffered audio
-        // After close(), the WebContent process should terminate on its own.
+        // Phase 2: Close after delay to allow WebKit pipeline and CoreAudio to drain
         let app_for_close = app.clone();
         let close_labels = savers.clone();
         tauri::async_runtime::spawn(async move {
@@ -446,16 +479,15 @@ impl ScreensaverEngine {
         }
     }
 
-    // Public methods for status and control
     pub fn get_status(&self) -> ScreensaverStatus {
         ScreensaverStatus {
-            is_active: self.is_active.load(Ordering::Relaxed),
+            is_active: self.get_state() == ScreensaverState::ScreensaverActive,
             is_monitoring: self.is_monitoring.load(Ordering::Relaxed),
         }
     }
 
     pub fn is_active(&self) -> bool {
-        self.is_active.load(Ordering::Relaxed)
+        self.get_state() == ScreensaverState::ScreensaverActive
     }
 
     pub fn stop_engine(&self) {
