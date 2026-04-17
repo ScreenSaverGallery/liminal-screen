@@ -29,39 +29,43 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 /// The plugin's on_webview_ready callback might fire too late for dynamically
 /// created windows.
 pub fn configure_autoplay_for_window<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) {
-    window
-        .with_webview(|webview| {
-            #[cfg(target_os = "macos")]
-            unsafe {
-                let wkwebview: id = webview.inner() as *mut _ as id;
-                let config: id = msg_send![wkwebview, configuration];
-                let _: () = msg_send![config, setMediaTypesRequiringUserActionForPlayback: 0];
-                let preferences: id = msg_send![config, preferences];
-                let _: () = msg_send![preferences, setJavaScriptCanOpenWindowsAutomatically: true];
-                println!("macOS autoplay configured for window via explicit call");
-            }
+    let label = window.label().to_string();
+    let closure_label = label.clone();
+    let err_label = label.clone();
+    match window.with_webview(move |webview| {
+        #[cfg(target_os = "macos")]
+        unsafe {
+            let wkwebview: id = webview.inner() as *mut _ as id;
+            let config: id = msg_send![wkwebview, configuration];
+            let _: () = msg_send![config, setMediaTypesRequiringUserActionForPlayback: 0];
+            let preferences: id = msg_send![config, preferences];
+            let _: () = msg_send![preferences, setJavaScriptCanOpenWindowsAutomatically: true];
+            println!("macOS autoplay configured for window {}", closure_label);
+        }
 
-            #[cfg(target_os = "windows")]
-            unsafe {
-                if let Some(controller) = webview.controller() {
-                    if let Ok(core_webview) = controller.CoreWebView2() {
-                        let settings = core_webview.Settings().unwrap();
-                        settings.SetIsScriptEnabled(true).ok();
-                        settings.SetAreDefaultScriptDialogsEnabled(true).ok();
-                        println!("Windows autoplay configured for window via explicit call");
-                    }
+        #[cfg(target_os = "windows")]
+        unsafe {
+            if let Some(controller) = webview.controller() {
+                if let Ok(core_webview) = controller.CoreWebView2() {
+                    let settings = core_webview.Settings().unwrap();
+                    settings.SetIsScriptEnabled(true).ok();
+                    settings.SetAreDefaultScriptDialogsEnabled(true).ok();
+                    println!("Windows autoplay configured for window {}", closure_label);
                 }
             }
+        }
 
-            #[cfg(target_os = "linux")]
-            unsafe {
-                let wkwebview = webview.inner() as *mut gtk::Widget;
-                let webview_ptr = &*(wkwebview as *mut webkit2gtk::WebView);
-                webkit2gtk::WebViewExt::set_media_playback_requires_user_gesture(webview_ptr, false);
-                println!("Linux autoplay configured for window via explicit call");
-            }
-        })
-        .ok();
+        #[cfg(target_os = "linux")]
+        unsafe {
+            let wkwebview = webview.inner() as *mut gtk::Widget;
+            let webview_ptr = &*(wkwebview as *mut webkit2gtk::WebView);
+            webkit2gtk::WebViewExt::set_media_playback_requires_user_gesture(webview_ptr, false);
+            println!("Linux autoplay configured for window {}", closure_label);
+        }
+    }) {
+        Ok(_) => {}
+        Err(e) => eprintln!("Failed to configure autoplay for window {}: {}", err_label, e),
+    }
 }
 
 #[cfg(target_os = "windows")]

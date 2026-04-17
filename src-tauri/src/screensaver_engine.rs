@@ -359,8 +359,13 @@ impl ScreensaverEngine {
 
         // Configure autoplay BEFORE navigating to the real URL.
         // On macOS, setMediaTypesRequiringUserActionForPlayback must be set
-        // before any media content loads.
+        // before any media content loads. We call this synchronously and it
+        // completes before we proceed to navigate.
         super::autoplay_media::configure_autoplay_for_window(&window);
+        
+        // Small delay to ensure the autoplay configuration has been applied
+        // to the webview before we start loading media content.
+        std::thread::sleep(std::time::Duration::from_millis(50));
 
         // Navigate to the actual screensaver URL now that autoplay is configured.
         let saver_url: url::Url = url.parse().unwrap();

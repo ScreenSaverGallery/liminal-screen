@@ -35,12 +35,14 @@ export interface AppOptions extends MandatoryOptions {
 }
 
 // Default values for mandatory options
+// These are loaded from .env at build time via Vite's import.meta.env
+// Users can override via the options UI; these apply on first install or factory reset
 const DEFAULT_MANDATORY_OPTIONS: MandatoryOptions = {
-  startsIn: 0.2, // 12 seconds for testing
-  displayOffIn: 1, // 1 minute
-  requirePassIn: 1, // 1 minute
-  runOnBattery: false,
-  debug: false,
+  startsIn: parseFloat(import.meta.env.VITE_DEFAULT_STARTS_IN) || 0.2,
+  displayOffIn: parseFloat(import.meta.env.VITE_DEFAULT_DISPLAY_OFF_IN) || 1,
+  requirePassIn: parseFloat(import.meta.env.VITE_DEFAULT_REQUIRE_PASS_IN) || 1,
+  runOnBattery: import.meta.env.VITE_DEFAULT_RUN_ON_BATTERY === "true" || false,
+  debug: import.meta.env.VITE_DEFAULT_DEBUG === "true" || false,
 };
 
 // Store file name

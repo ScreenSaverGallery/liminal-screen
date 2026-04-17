@@ -12,6 +12,21 @@ use tauri::{
     webview::WebviewWindowBuilder,
     AppHandle, Emitter, Manager, Runtime, WebviewUrl,
 };
+use tauri_plugin_store::StoreExt;
+
+/// Initialize environment variables from .env file (development only).
+/// Tauri's Rust backend doesn't auto-load .env files, so we use the dotenv crate.
+fn init_env() {
+    #[cfg(debug_assertions)]
+    {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let env_path = std::path::PathBuf::from(manifest_dir).join("../.env");
+        
+        if let Err(e) = dotenv::from_path(&env_path) {
+            eprintln!("[dotenv] Warning: Could not load {:?}: {}", env_path, e);
+        }
+    }
+}
 
 /// Screensaver window label prefix
 const _SAVER_LABEL_PREFIX: &str = "saver-display-";
@@ -19,6 +34,48 @@ const _SAVER_LABEL_PREFIX: &str = "saver-display-";
 const OPTIONS_LABEL: &str = "options";
 /// Main window label
 const MAIN_WINDOW_LABEL: &str = "main";
+
+/// Load persisted options from the store, falling back to env var defaults.
+/// This ensures the backend uses user-saved preferences, not just .env defaults.
+fn load_persisted_options<R: Runtime>(app: &tauri::App<R>) -> Result<AppOptions, Box<dyn std::error::Error>> {
+    // Start with defaults from env vars
+    let mut options = AppOptions::default();
+    
+    // Try to load persisted options from store
+    let store = app.store("options.json")?;
+    
+    // Load each field if present in store, overriding defaults
+    if let Some(starts_in) = store.get("startsIn") {
+        if let Some(val) = starts_in.as_f64() {
+            options.starts_in = val;
+        }
+    }
+    if let Some(display_off_in) = store.get("displayOffIn") {
+        if let Some(val) = display_off_in.as_f64() {
+            options.display_off_in = val;
+        }
+    }
+    if let Some(require_pass_in) = store.get("requirePassIn") {
+        if let Some(val) = require_pass_in.as_f64() {
+            options.require_pass_in = val;
+        }
+    }
+    if let Some(run_on_battery) = store.get("runOnBattery") {
+        if let Some(val) = run_on_battery.as_bool() {
+            options.run_on_battery = val;
+        }
+    }
+    if let Some(debug) = store.get("debug") {
+        if let Some(val) = debug.as_bool() {
+            options.debug = val;
+        }
+    }
+    
+    // Note: saver_url, saver_url_debug, options_url are NOT persisted - they come from .env
+    // This allows forks to change URLs without affecting user preferences
+    
+    Ok(options)
+}
 
 /// Application state
 pub struct AppState {
@@ -43,26 +100,47 @@ pub struct AppOptions {
 impl Default for AppOptions {
     fn default() -> Self {
         Self {
-            saver_url: "https://metazoa.org/ssg/dev/".to_string(),
-            saver_url_debug: "https://save.screensaver.gallery/debug".to_string(),
-            options_url: "".to_string(),
-            //options_url: "http://localhost/dev/projects/ssg/apps/tauri/ssg-tauri-liminal/options/options.html".to_string(),
-            starts_in: 0.2,      // 12 seconds for testing
-            display_off_in: 1.0, // 1 minute
-            require_pass_in: 1.0,
-            run_on_battery: false,
-            debug: false,
+            // Read from environment variables with fallbacks for forkability
+            saver_url: std::env::var("VITE_SAVER_URL")
+                .unwrap_or_else(|_| "about:blank".to_string()),
+            saver_url_debug: std::env::var("VITE_SAVER_URL_DEBUG")
+                .unwrap_or_else(|_| "about:blank".to_string()),
+            options_url: std::env::var("VITE_OPTIONS_URL").unwrap_or_else(|_| "".to_string()),
+            starts_in: std::env::var("VITE_DEFAULT_STARTS_IN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.2),
+            display_off_in: std::env::var("VITE_DEFAULT_DISPLAY_OFF_IN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1.0),
+            require_pass_in: std::env::var("VITE_DEFAULT_REQUIRE_PASS_IN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1.0),
+            run_on_battery: std::env::var("VITE_DEFAULT_RUN_ON_BATTERY")
+                .map(|s| s == "true")
+                .unwrap_or(false),
+            debug: std::env::var("VITE_DEFAULT_DEBUG")
+                .map(|s| s == "true")
+                .unwrap_or(false),
         }
     }
 }
 
 /// Initialize the application
 fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize app state
+    // Load persisted options from store, falling back to env var defaults
+    let options = load_persisted_options(app).unwrap_or_else(|e| {
+        eprintln!("[store] Warning: Could not load persisted options, using defaults: {}", e);
+        AppOptions::default()
+    });
+    
+    // Initialize app state with loaded options
     let app_state = AppState {
         is_screensaver_active: std::sync::Mutex::new(false),
         active_savers: std::sync::Mutex::new(Vec::new()),
-        options: std::sync::Mutex::new(AppOptions::default()),
+        options: std::sync::Mutex::new(options),
     };
     app.manage(app_state);
 
@@ -72,7 +150,8 @@ fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::err
     // Get the main window and hide it initially if desired
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         // Window is already created by tauri.conf.json
-        let _ = window.set_title("Liminal Screen");
+        let title = std::env::var("VITE_APP_NAME").unwrap_or_else(|_| "Liminal Screen".to_string());
+        let _ = window.set_title(&title);
     }
 
     // Initialize and start the screensaver engine
@@ -189,8 +268,10 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
         .map_err(|e| format!("Failed to parse options URL '{}': {}", options_url, e))?;
 
     // Create options window
+    let title = std::env::var("VITE_APP_NAME").unwrap_or_else(|_| "Liminal Screen".to_string());
+    let options_title = format!("{} Options", title);
     let window = WebviewWindowBuilder::new(app, OPTIONS_LABEL, WebviewUrl::External(url))
-        .title("Liminal Screen Options")
+        .title(&options_title)
         .inner_size(900.0, 600.0)
         .resizable(true)
         .decorations(true)
@@ -219,7 +300,6 @@ fn open_options(app: AppHandle) -> Result<(), String> {
 }
 
 /// Command to get app options
-/// Command to get app options
 #[tauri::command]
 fn get_options(state: tauri::State<AppState>) -> Result<AppOptions, String> {
     // TODO: Implement token validation when security is enabled
@@ -229,18 +309,51 @@ fn get_options(state: tauri::State<AppState>) -> Result<AppOptions, String> {
 
 /// Command to factory reset app options
 #[tauri::command]
-fn factory_reset_options() -> Result<AppOptions, String> {
-    // TODO: Implement token validation when security is enabled
+fn factory_reset_options<R: Runtime>(app: AppHandle<R>, state: tauri::State<AppState>) -> Result<AppOptions, String> {
+    // Delete the store file
+    let store = app.store("options.json").map_err(|e| format!("Failed to open store: {}", e))?;
+    store.clear();
+    store.save().map_err(|e| format!("Failed to save reset: {}", e))?;
+    
+    // Reset in-memory state to defaults
     let default_options = AppOptions::default();
+    let mut current = state.options.lock().unwrap();
+    *current = default_options.clone();
+    
     Ok(default_options)
 }
 
 /// Command to set app options
 #[tauri::command]
-fn set_options(state: tauri::State<AppState>, options: AppOptions) -> Result<(), String> {
-    // TODO: Implement token validation when security is enabled
+fn set_options<R: Runtime>(app: AppHandle<R>, state: tauri::State<AppState>, options: AppOptions) -> Result<(), String> {
+    // Preserve URLs from current state - these are fork-controlled, not user-configurable
+    let current = state.options.lock().unwrap();
+    let options_with_preserved_urls = AppOptions {
+        saver_url: current.saver_url.clone(),
+        saver_url_debug: current.saver_url_debug.clone(),
+        options_url: current.options_url.clone(),
+        ..options.clone()
+    };
+    drop(current);
+    
+    // Update in-memory state with preserved URLs
     let mut current = state.options.lock().unwrap();
-    *current = options;
+    *current = options_with_preserved_urls.clone();
+    drop(current);
+    
+    // Persist to store (only non-URL fields)
+    let store = app.store("options.json").map_err(|e| format!("Failed to open store: {}", e))?;
+    
+    // Only persist fields that should be saved (not URLs)
+    store.set("startsIn", options.starts_in);
+    store.set("displayOffIn", options.display_off_in);
+    store.set("requirePassIn", options.require_pass_in);
+    store.set("runOnBattery", options.run_on_battery);
+    store.set("debug", options.debug);
+    
+    // Save the store to disk
+    store.save().map_err(|e| format!("Failed to save options: {}", e))?;
+    
     Ok(())
 }
 
@@ -354,6 +467,9 @@ fn open_devtools(_: tauri::Window) {
 /// Main entry point
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Load environment variables from .env file (development only)
+    init_env();
+    
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())

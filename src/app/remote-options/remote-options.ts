@@ -231,17 +231,20 @@ function updateStatusDisplay(): void {
  */
 async function saveOptions(): Promise<void> {
   try {
+    // Fetch current options first to preserve URLs and other backend-controlled fields
+    const current = isTauri ? await invoke<any>("get_options") : null;
+    
     // Get values from form
     const newOptions = {
       starts_in: startsInInput ? parseFloat(startsInInput.value) : 0.2,
       display_off_in: displayOffInput ? parseFloat(displayOffInput.value) : 1.0,
       run_on_battery: runOnBatteryInput ? runOnBatteryInput.checked : false,
       debug: debugInput ? debugInput.checked : false,
-      // These come from environment variables, so we don't change them here
-      saver_url: "", // Will be set by main app
-      saver_url_debug: "", // Will be set by main app
-      options_url: "", // Will be set by main app
-      require_pass_in: 1.0, // Default value
+      // Preserve backend-controlled fields from current state
+      saver_url: current?.saver_url || "",
+      saver_url_debug: current?.saver_url_debug || "",
+      options_url: current?.options_url || "",
+      require_pass_in: current?.require_pass_in || 1.0,
     };
 
     // Validate
@@ -303,8 +306,7 @@ async function resetOptions(): Promise<void> {
     // Update form with default options
     loadOptionsIntoForm(defaultOptions);
 
-    // Save the reset options
-    await saveOptions();
+    // Note: factory_reset_options() already persists to disk, no need to call saveOptions()
 
     alert("Options reset to defaults");
   } catch (error) {
