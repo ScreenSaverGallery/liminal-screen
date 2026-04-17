@@ -35,10 +35,7 @@ pub fn get_available_monitors<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Monit
             let sz = m.size();
             MonitorInfo {
                 id: index as u32,
-                name: m
-                    .name()
-                    .map(|s| s.clone())
-                    .unwrap_or_else(|| "Unknown".to_string()),
+                name: m.name().cloned().unwrap_or_else(|| "Unknown".to_string()),
                 position: Position { x: pos.x, y: pos.y },
                 size: Size {
                     width: sz.width,

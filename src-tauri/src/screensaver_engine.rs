@@ -410,7 +410,9 @@ impl ScreensaverEngine {
 
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        let saver_url: url::Url = url.parse().unwrap();
+        let saver_url: url::Url = url
+            .parse()
+            .map_err(|e| format!("Invalid saver URL '{}': {}", url, e))?;
         match window.navigate(saver_url) {
             Ok(_) => println!("Navigated {} to {}", label, url),
             Err(e) => println!("Warning: Navigation failed for {}: {}", label, e),

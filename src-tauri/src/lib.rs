@@ -28,8 +28,6 @@ fn init_env() {
     }
 }
 
-/// Screensaver window label prefix
-const _SAVER_LABEL_PREFIX: &str = "saver-display-";
 /// Options window label
 const OPTIONS_LABEL: &str = "options";
 /// Main window label
@@ -79,7 +77,6 @@ fn load_persisted_options<R: Runtime>(app: &tauri::App<R>) -> Result<AppOptions,
 
 /// Application state
 pub struct AppState {
-    pub is_screensaver_active: std::sync::Mutex<bool>,
     pub active_savers: std::sync::Mutex<Vec<String>>,
     pub options: std::sync::Mutex<AppOptions>,
 }
@@ -138,7 +135,6 @@ fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::err
     
     // Initialize app state with loaded options
     let app_state = AppState {
-        is_screensaver_active: std::sync::Mutex::new(false),
         active_savers: std::sync::Mutex::new(Vec::new()),
         options: std::sync::Mutex::new(options),
     };
@@ -327,34 +323,26 @@ fn factory_reset_options<R: Runtime>(app: AppHandle<R>, state: tauri::State<AppS
 /// Command to set app options
 #[tauri::command]
 fn set_options<R: Runtime>(app: AppHandle<R>, state: tauri::State<AppState>, options: AppOptions) -> Result<(), String> {
-    // Preserve URLs from current state - these are fork-controlled, not user-configurable
-    let current = state.options.lock().unwrap();
-    let options_with_preserved_urls = AppOptions {
-        saver_url: current.saver_url.clone(),
-        saver_url_debug: current.saver_url_debug.clone(),
-        options_url: current.options_url.clone(),
-        ..options.clone()
+    // Preserve URLs — these are fork-controlled via .env, not user-configurable
+    let new_options = {
+        let current = state.options.lock().unwrap();
+        AppOptions {
+            saver_url: current.saver_url.clone(),
+            saver_url_debug: current.saver_url_debug.clone(),
+            options_url: current.options_url.clone(),
+            ..options.clone()
+        }
     };
-    drop(current);
-    
-    // Update in-memory state with preserved URLs
-    let mut current = state.options.lock().unwrap();
-    *current = options_with_preserved_urls.clone();
-    drop(current);
-    
-    // Persist to store (only non-URL fields)
+    *state.options.lock().unwrap() = new_options;
+
     let store = app.store("options.json").map_err(|e| format!("Failed to open store: {}", e))?;
-    
-    // Only persist fields that should be saved (not URLs)
     store.set("startsIn", options.starts_in);
     store.set("displayOffIn", options.display_off_in);
     store.set("requirePassIn", options.require_pass_in);
     store.set("runOnBattery", options.run_on_battery);
     store.set("debug", options.debug);
-    
-    // Save the store to disk
     store.save().map_err(|e| format!("Failed to save options: {}", e))?;
-    
+
     Ok(())
 }
 
@@ -366,35 +354,29 @@ fn get_screensaver_status(
     Ok(state.get_status())
 }
 
-/// Command to manually activate screensaver (for preview/testing)
-/// Dispatches activation to the main thread via the engine.
+/// Command to manually activate screensaver (for preview/testing).
+/// Only activates from Idle state — Tauri commands run on the main thread.
 #[tauri::command]
 fn activate_screensaver_command<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<screensaver_engine::ScreensaverEngine>,
 ) -> Result<(), String> {
-    if state.is_active() {
-        println!("Screensaver already active, ignoring manual activation");
+    if state.get_state() != screensaver_engine::ScreensaverState::Idle {
         return Ok(());
     }
-    // Directly call activate on the main thread (we're already on the main thread
-    // since this is called from a Tauri command handler)
     state.activate_screensaver(&app)
 }
 
-/// Command to manually deactivate screensaver
-/// Dispatches deactivation to the main thread via the engine.
+/// Command to manually deactivate screensaver.
+/// Resets to Idle from any non-Idle state.
 #[tauri::command]
 fn deactivate_screensaver_command<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<screensaver_engine::ScreensaverEngine>,
 ) -> Result<(), String> {
-    if !state.is_active() {
-        println!("Screensaver not active, ignoring manual deactivation");
+    if state.get_state() == screensaver_engine::ScreensaverState::Idle {
         return Ok(());
     }
-    // Directly call deactivate on the main thread (we're already on the main thread
-    // since this is called from a Tauri command handler)
     state.deactivate_screensaver(&app)
 }
 
@@ -424,11 +406,14 @@ fn clear_active_savers(state: tauri::State<AppState>) -> Result<(), String> {
 /// Command to navigate webview to URL (used to stop media)
 #[tauri::command]
 fn navigate_webview(app: AppHandle, label: String, url: String) -> Result<(), String> {
+    let parsed = url
+        .parse()
+        .map_err(|e| format!("Invalid URL '{}': {}", url, e))?;
     if let Some(window) = app.get_webview_window(&label) {
-        let _ = window.navigate(url.parse().unwrap());
+        let _ = window.navigate(parsed);
         Ok(())
     } else {
-        Err(format!("Window with label '{}' not found", label))
+        Err(format!("Window '{}' not found", label))
     }
 }
 
@@ -443,26 +428,22 @@ fn evaluate_javascript(app: AppHandle, label: String, script: String) -> Result<
     }
 }
 
-/// Acquire application-level power management blocker (dummy implementation)
+/// Acquire application-level power management blocker
 #[tauri::command]
 fn acquire_app_power_blocker<R: tauri::Runtime>(_app: tauri::AppHandle<R>) -> Result<u32, String> {
-    // Use the existing power monitor command through invoke
-    // This will call the public prevent_display_sleep function
-    Ok(1) // Return a simple blocker ID
+    power_monitor::prevent_display_sleep_direct().map(|_| 1)
 }
 
 /// Release application-level power management blocker
 #[tauri::command]
 fn release_app_power_blocker<R: tauri::Runtime>(_app: tauri::AppHandle<R>) -> Result<(), String> {
-    // This would call allow_display_sleep when implemented
-    Ok(())
+    power_monitor::allow_display_sleep_direct()
 }
 
-/// Open devtools by invoke this command
+/// Open devtools (requires `devtools` Cargo feature + debug build)
 #[tauri::command]
-fn open_devtools(_: tauri::Window) {
-    // window.open_devtools();
-    // app.get_window("main").unwrap().open_devtools();
+fn open_devtools(_window: tauri::Window) {
+    // Intentionally left as a stub — enable the `devtools` Cargo feature to implement
 }
 
 /// Main entry point
