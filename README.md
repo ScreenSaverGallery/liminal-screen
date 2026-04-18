@@ -136,11 +136,10 @@ User preferences (timing values like `startsIn`, `displayOffIn`, etc.) are saved
 Users can reset to `.env` defaults via the UI (Reset button) or by deleting `options.json` from the app's data directory.
 
 # Development mode
-bun run tauri dev
+`bun run tauri dev`
 
 # Production build
-bun run tauri build
-```
+`bun run tauri build`
 
 ## Architecture
 
