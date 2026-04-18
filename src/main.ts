@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { ask, message } from "@tauri-apps/plugin-dialog";
 
 import { PowerMonitor } from "./app/power-monitor/power-monitor";
 import { Preview } from "./app/preview/preview";
@@ -58,7 +59,11 @@ function formatIdle(secs: number): string {
 
 // ── Init ───────────────────────────────────────────────────────────────────
 
+let initialized = false;
+
 async function init(): Promise<void> {
+  if (initialized) return;
+  initialized = true;
   console.log("Liminal Screen - Initializing...");
   try {
     options.set(await invoke<AppOptions>("get_options"));
@@ -121,14 +126,15 @@ function setupUIButtonHandlers(): void {
   document.getElementById("save-btn")?.addEventListener("click", () => saveOptions());
   document.getElementById("preview-btn")?.addEventListener("click", () => previewScreensaver());
   document.getElementById("reset-btn")?.addEventListener("click", async () => {
-    if (!confirm("Reset all options to defaults?")) return;
+    const confirmed = await ask("Reset all options to defaults?", { title: "Reset", kind: "warning", okLabel: "Reset", cancelLabel: "Cancel" });
+    if (!confirmed) return;
     try {
       await invoke("factory_reset_options");
       options.set(await invoke<AppOptions>("get_options"));
-      // Form updates reactively via options.effect() — no alert needed
+      // Form updates reactively via options.effect() — no dialog needed
     } catch (error) {
       console.error("Failed to reset options:", error);
-      alert("Failed to reset options. Please try again.");
+      await message("Failed to reset options. Please try again.", { title: "Error", kind: "error" });
     }
   });
 }
@@ -144,15 +150,15 @@ async function saveOptions(silent = false): Promise<void> {
   const debug        = debugInput         ? debugInput.checked                   : current.debug;
 
   if (isNaN(startsIn) || startsIn < 0.1) {
-    if (!silent) alert("Start After must be at least 0.1 minutes");
+    if (!silent) await message("Start After must be at least 0.1 minutes", { title: "Validation Error", kind: "error" });
     return;
   }
   if (isNaN(displayOffIn) || displayOffIn < 0.5) {
-    if (!silent) alert("Display Off must be at least 0.5 minutes");
+    if (!silent) await message("Display Off must be at least 0.5 minutes", { title: "Validation Error", kind: "error" });
     return;
   }
   if (isNaN(requirePassIn) || requirePassIn < 0) {
-    if (!silent) alert("Require Password must be 0 or a positive number");
+    if (!silent) await message("Require Password must be 0 or a positive number", { title: "Validation Error", kind: "error" });
     return;
   }
 
@@ -161,9 +167,9 @@ async function saveOptions(silent = false): Promise<void> {
       options: { ...current, startsIn, displayOffIn, requirePassIn, runOnBattery, debug },
     });
     options.set(await invoke<AppOptions>("get_options"));
-    if (!silent) alert("Settings saved successfully!");
+    if (!silent) await message("Settings saved successfully!", { title: "Settings", kind: "info" });
   } catch {
-    if (!silent) alert("Failed to save settings. Please try again.");
+    if (!silent) await message("Failed to save settings. Please try again.", { title: "Error", kind: "error" });
   }
 }
 
@@ -241,11 +247,7 @@ window.addEventListener("DOMContentLoaded", () => {
 });
 
 // Also init immediately for hidden-window scenarios (Tauri may not fire DOMContentLoaded)
-try {
-  init().catch(console.error);
-} catch (error) {
-  console.error("Immediate init threw error:", error);
-}
+init().catch(console.error);
 
 (window as unknown as { liminalScreen: Record<string, unknown> }).liminalScreen = {
   deactivateScreensaver: forceDeactivateScreensaver,

@@ -1,4 +1,4 @@
-# Reset to Defaults — Bug Analysis
+# "Reset to Defaults" Button Bug — Full Debug Summary
 
 **Date:** 2026-04-18  
 **Symptom:** Clicking "Reset to Defaults" does nothing — no confirm dialog, no form changes.  
@@ -6,75 +6,35 @@
 
 ---
 
-## Symptoms (as reported)
+## Diagnosis
 
-1. Form fields don't change at all after clicking Reset
-2. The confirm dialog does NOT appear
-3. No console errors
-4. Defaults are expected to come from `.env`
-5. Save button works correctly
+Three interacting bugs caused the Reset button to be completely non-functional:
 
-## Code Paths Involved
+### Bug 1: `<button>` missing `type="button"` → form submission on click
 
-Two separate UIs can show the Reset button:
-
-### A. Local main window (`src/main.ts` + `index.html`)
-
-```js
-// src/main.ts lines 123-133
-document.getElementById("reset-btn")?.addEventListener("click", async () => {
-    if (!confirm("Reset all options to defaults?")) return;
-    try {
-      await invoke("factory_reset_options");
-      options.set(await invoke<AppOptions>("get_options"));
-    } catch (error) {
-      console.error("Failed to reset options:", error);
-      alert("Failed to reset options. Please try again.");
-    }
-  });
-```
-
-### B. Remote options page (`packages/liminal-api/examples/remote-options/main.ts`)
-
-```ts
-// remote-options/main.ts lines 192-201
-async function reset(): Promise<void> {
-  if (!confirm('Reset all options to defaults?')) return;
-  try {
-    await store.reset();
-    setStatus(api.isInTauri, 'Reset to defaults');
-  } catch (e) {
-    alert(`Failed to reset: ${e}`);
-  }
-}
-```
-
----
-
-## Root Cause Analysis
-
-### Primary Suspect: `<button>` without `type="button"`
-
-Both `index.html` and the remote options `index.html` have `<button>` elements **without an explicit `type` attribute**:
+Both `index.html` and the remote options HTML had `<button>` elements **without an explicit `type` attribute**:
 
 ```html
-<!-- index.html line 116 -->
+<!-- BEFORE — defaults to type="submit" -->
 <button id="reset-btn" class="btn btn-danger">Reset to Defaults</button>
-
-<!-- remote-options/index.html line 144 -->
-<button class="btn-danger" id="reset-btn">Reset to defaults</button>
 ```
 
-By HTML spec, `<button>` defaults to `type="submit"`. While these buttons are placed **outside** the `<form id="options-form">`, some browser engines (notably WebKit/WKWebView used by Tauri on macOS) can still associate buttons with nearby forms through heuristics or parent-scope form association.
+By HTML spec, `<button>` defaults to `type="submit"`. Even though these buttons sat outside the `<form>`, WebKit/WKWebView (which Tauri uses on macOS) can associate nearby buttons with forms. Clicking Reset triggered a form submission/page reload instead of running the JavaScript click handler.
 
-**If the browser treats the button as a form submit button**, clicking it would:
-- Trigger form submission (page navigation/reload)
-- The JavaScript click handler **never completes** — `confirm()` is either skipped or its dialog is destroyed by the navigation
-- The page reloads to its initial state, so form fields appear unchanged
+```html
+<!-- AFTER -->
+<button id="reset-btn" type="button" class="btn btn-danger">Reset to Defaults</button>
+```
 
-**Why Save still "works":** The `change` event listener on inputs auto-saves values via `saveOptions(true)` (silent mode). When a user edits a field and clicks away, `change` fires, persisting the value. The user sees their changes saved and assumes the Save button works — but it's the **auto-save on blur** doing the work, not the explicit Save button click.
+**Why Save "worked":** The `change` event listener on inputs auto-saves on blur (`saveOptions(true)` in silent mode). Users editing a value and clicking away triggered the save. The explicit Save button was just as broken as Reset if clicked directly — but nobody noticed because auto-save masked it.
 
-### Secondary Issue: Double `init()` in `src/main.ts`
+### Bug 2: Tauri v2 WKWebView silently suppresses `confirm()` and `alert()`
+
+Even after fixing Bug 1, the Reset handler calls `confirm("Reset all options to defaults?")`. Tauri v2's WKWebView on macOS **silently swallows native JavaScript `confirm()` and `alert()` calls** by default. The dialog never appears, the function returns `undefined` (falsy), and the Reset logic short-circuits at the `if (!confirm(...))` guard.
+
+This is by design in Tauri v2 — native dialogs are blocked for security/UX reasons. The proper solution is `tauri-plugin-dialog`, which provides native OS-level dialogs through Tauri's IPC.
+
+### Bug 3: Double `init()` in `src/main.ts`
 
 ```js
 window.addEventListener("DOMContentLoaded", () => {
@@ -82,68 +42,57 @@ window.addEventListener("DOMContentLoaded", () => {
   init();
 });
 
-// Also init immediately — runs BEFORE DOMContentLoaded
+// ALSO runs immediately, BEFORE DOMContentLoaded:
 try { init().catch(console.error); } catch (error) { ... }
 ```
 
-This causes:
-- `setupEventListeners()` registers duplicate Tauri event listeners
-- The immediate `init()` sets `options` before DOM elements are cached, so the first effect run is a no-op
-- Not the direct cause of the reset bug, but creates confusing double-fire behavior
-
-### Rust Backend: `factory_reset_options` (verified correct)
-
-```rust
-// src-tauri/src/lib.rs lines 335-347
-fn factory_reset_options<R: Runtime>(app: AppHandle<R>, state: tauri::State<AppState>) -> Result<AppOptions, String> {
-    let store = app.store("options.json").map_err(|e| format!("Failed to open store: {}", e))?;
-    store.clear();
-    store.save().map_err(|e| format!("Failed to save reset: {}", e))?;
-    
-    let default_options = AppOptions::default();
-    let mut current = state.options.lock().unwrap();
-    *current = default_options.clone();
-    
-    Ok(default_options)
-}
-```
-
-This is correct: clears persistent store, resets in-memory state to `.env` defaults, returns the new defaults.
+This caused duplicate Tauri event listeners and the first `options.effect()` firing before DOM elements were cached (no-op). Not the direct cause of the reset bug, but created confusing double-fire behavior.
 
 ---
 
-## Proposed Fix — 3 Changes
+## Fix Applied
 
-### 1. Add `type="button"` to ALL buttons in both HTML files
+### 1. Added `type="button"` to all `<button>` elements (both HTML files)
 
-**`index.html`:**
-```html
-<button id="save-btn" type="button" class="btn btn-primary">Save Settings</button>
-<button id="preview-btn" type="button" class="btn btn-secondary">Preview Screensaver</button>
-<button id="reset-btn" type="button" class="btn btn-danger">Reset to Defaults</button>
+Prevents form submission behavior on click.
+
+### 2. Installed `tauri-plugin-dialog` and replaced native dialogs
+
+**Rust side:**
+- Added `tauri-plugin-dialog = "2"` to `Cargo.toml`
+- Registered `.plugin(tauri_plugin_dialog::init())` in `lib.rs`
+- Added permissions to both capability files
+
+**Local main window (`src/main.ts`):**
+```ts
+import { ask, message } from "@tauri-apps/plugin-dialog";
+
+// Reset handler:
+const confirmed = await ask("Reset all options to defaults?", {
+  title: "Reset", kind: "warning", okLabel: "Reset", cancelLabel: "Cancel"
+});
+
+// Save handler:
+await message("Settings saved successfully!", { title: "Saved", kind: "info" });
 ```
 
-**`packages/liminal-api/examples/remote-options/index.html`:**
-```html
-<button class="btn-primary" id="save-btn" type="button">Save</button>
-<button class="btn-secondary" id="preview-btn" type="button">Preview</button>
-<button class="btn-danger" id="reset-btn" type="button">Reset to defaults</button>
-```
+**Remote options window (`liminal-api`):**
+```ts
+// Uses __TAURI__.dialog (withGlobalTauri: true — no npm import needed)
+const tauriDialog = () => (window as any).__TAURI__.dialog;
 
-### 2. Remove duplicate `init()` call in `src/main.ts`
+async ask(message: string, options?: Record<string, unknown>): Promise<boolean> {
+  return tauriDialog().ask(message, options ?? { title: "Confirm", kind: "warning" });
+}
 
-Delete the bottom-of-file immediate invocation:
-```js
-// REMOVE these lines from the end of main.ts:
-try {
-  init().catch(console.error);
-} catch (error) {
-  console.error("Immediate init threw error:", error);
+async showMessage(message: string, options?: Record<string, unknown>): Promise<void> {
+  return tauriDialog().message(message, options ?? { title: "Info", kind: "info" });
 }
 ```
 
-Add a guard inside `init()` to prevent double-registration if needed:
-```js
+### 3. Added `initialized` guard to `init()` in `src/main.ts`
+
+```ts
 let initialized = false;
 
 async function init(): Promise<void> {
@@ -153,31 +102,45 @@ async function init(): Promise<void> {
 }
 ```
 
-### 3. Verify: after the fix, test these scenarios
+### 4. Fixed invalid capability permission
 
-- [ ] Reset button shows confirm dialog
-- [ ] Confirming reset updates all form fields to `.env` defaults
-- [ ] Cancelling reset leaves form unchanged
-- [ ] Save button still works (both explicit click and auto-save on change)
-- [ ] Reopening the options window shows reset values (persistence works)
-- [ ] Works in both local main window AND remote options window
+Initially added `dialog:allow-ok` which doesn't exist in Tauri v2's dialog plugin. The valid permissions are:
+
+| Permission | Purpose |
+|---|---|
+| `dialog:allow-ask` | Yes/No confirmation dialog |
+| `dialog:allow-confirm` | Confirm dialog |
+| `dialog:allow-message` | Alert/message dialog |
+| `dialog:allow-open` | File open dialog |
+| `dialog:allow-save` | File save dialog |
+| `dialog:default` | All of the above |
+
+Only `dialog:allow-ask` and `dialog:allow-message` were needed. Removed `dialog:allow-ok` from both `default.json` and `options.json`.
 
 ---
 
-## If Bug Persists After Fix
+## Files Modified
 
-If `type="button"` doesn't resolve it, next steps:
+| File | Change |
+|---|---|
+| `index.html` | `type="button"` on save, preview, reset buttons |
+| `packages/liminal-api/examples/remote-options/index.html` | `type="button"` on save, preview, reset buttons |
+| `src/main.ts` | Import `ask`/`message` from dialog plugin, replace `confirm()` → `ask()`, `alert()` → `message()`, add `initialized` guard |
+| `package.json` / `bun.lock` | Added `@tauri-apps/plugin-dialog` |
+| `src-tauri/Cargo.toml` | Added `tauri-plugin-dialog = "2"` |
+| `src-tauri/src/lib.rs` | Added `.plugin(tauri_plugin_dialog::init())` |
+| `src-tauri/capabilities/default.json` | Added `dialog:allow-ask`, `dialog:allow-message` |
+| `src-tauri/capabilities/options.json` | Added `dialog:allow-ask`, `dialog:allow-message` |
+| `packages/liminal-api/src/index.ts` | Added `tauriDialog()` helper, `ask()`, `showMessage()` methods |
+| `packages/liminal-api/examples/remote-options/main.ts` | Replaced `confirm()` → `api.ask()`, `alert()` → `api.showMessage()` |
 
-1. **Add diagnostic `console.log`** as the first line of the click handler:
-   ```js
-   document.getElementById("reset-btn")?.addEventListener("click", async () => {
-     console.log("Reset button clicked");  // DIAGNOSTIC
-     if (!confirm("Reset all options to defaults?")) return;
-     ...
-   ```
+---
 
-2. **Check if `confirm()` is blocked** by Content Security Policy or Tauri webview config — some setups suppress modal dialogs silently.
+## Key Takeaway
 
-3. **Check if the element is found** — add `console.log("reset-btn element:", document.getElementById("reset-btn"))` before the listener.
+When a button does nothing in a Tauri v2 app — no errors, no console output — check two things:
 
-4. **Check if auto-save on `change` races with reset** — the remote options page auto-saves on every `change` event. If a field is focused when Reset is clicked, `change` fires first, auto-saving stale values that could overwrite the reset.
+1. **Does the button have `type="button"`?** Without it, `<button>` defaults to `type="submit"` and clicks trigger form submission instead of your handler.
+2. **Does the handler use `confirm()` or `alert()`?** Tauri v2's WKWebView silently suppresses native JS dialogs. Use `tauri-plugin-dialog` and add the appropriate capability permissions (`dialog:allow-ask`, `dialog:allow-message`, etc.).
+
+Both bugs were silent — no error, no console output, no visible feedback. The button click either (a) submitted the form and reloaded the page, or (b) had its confirm dialog swallowed by the webview. Either way: zero visible effect.

@@ -20,6 +20,8 @@ declare const LiminalAPI: {
     resetOptions(): Promise<AppOptions>;
     previewScreensaver(): Promise<void>;
     startAutoSync(cb: (o: AppOptions) => void): Promise<() => void>;
+    ask(message: string, options?: Record<string, unknown>): Promise<boolean>;
+    showMessage(message: string, options?: Record<string, unknown>): Promise<void>;
     isInTauri: boolean;
   };
   createOptionsStore: typeof createOptionsStore;
@@ -179,24 +181,24 @@ async function init(): Promise<void> {
 
   async function save(): Promise<void> {
     const err = validateForm();
-    if (err) { alert(err); return; }
+    if (err) { await api.showMessage(err, { title: 'Validation Error', kind: 'error' }); return; }
     try {
       await store.save(collectForm());
       setStatus(api.isInTauri, 'Saved');
       setTimeout(() => setStatus(api.isInTauri, 'Connected'), 2000);
     } catch (e) {
-      alert(`Failed to save: ${e}`);
+      await api.showMessage(`Failed to save: ${e}`, { title: 'Error', kind: 'error' });
     }
   }
 
   async function reset(): Promise<void> {
-    if (!confirm('Reset all options to defaults?')) return;
+    if (!await api.ask('Reset all options to defaults?', { title: 'Reset', kind: 'warning', okLabel: 'Reset', cancelLabel: 'Cancel' })) return;
     try {
       await store.reset();
       setStatus(api.isInTauri, 'Reset to defaults');
       setTimeout(() => setStatus(api.isInTauri, 'Connected'), 2000);
     } catch (e) {
-      alert(`Failed to reset: ${e}`);
+      await api.showMessage(`Failed to reset: ${e}`, { title: 'Error', kind: 'error' });
     }
   }
 

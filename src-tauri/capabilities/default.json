@@ -9,6 +9,8 @@
     "core:webview:allow-create-webview-window",
     "core:event:allow-listen",
     "core:event:allow-emit",
+    "dialog:allow-ask",
+    "dialog:allow-message",
     "core:window:allow-close",
     "core:window:allow-show",
     "core:window:allow-hide",

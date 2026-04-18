@@ -41,6 +41,13 @@ function tauriListen(): ListenFn | null {
   return (window as any).__TAURI__?.event?.listen ?? null;
 }
 
+function tauriDialog(): { ask(message: string, options?: Record<string, unknown>): Promise<boolean>; message(message: string, options?: Record<string, unknown>): Promise<void> } | null {
+  if (typeof window === 'undefined') return null;
+  const dialog = (window as any).__TAURI__?.dialog;
+  if (!dialog?.ask || !dialog?.message) return null;
+  return { ask: dialog.ask.bind(dialog), message: dialog.message.bind(dialog) };
+}
+
 // ── Error ───────────────────────────────────────────────────────────────────
 
 export class LiminalAPIError extends Error {
@@ -121,6 +128,29 @@ export class LiminalAPI {
     } catch (e) {
       throw new LiminalAPIError('Failed to reset options', e);
     }
+  }
+
+  /**
+   * Show a confirmation dialog (Yes/No). Returns true if the user confirms.
+   * Falls back to window.confirm() in non-Tauri environments.
+   */
+  async ask(message: string, options?: Record<string, unknown>): Promise<boolean> {
+    const dialog = tauriDialog();
+    if (dialog) {
+      return dialog.ask(message, options);
+    }
+    return window.confirm(message);
+  }
+
+  /**
+   * Show a message dialog. Falls back to window.alert() in non-Tauri environments.
+   */
+  async showMessage(message: string, options?: Record<string, unknown>): Promise<void> {
+    const dialog = tauriDialog();
+    if (dialog) {
+      return dialog.message(message, options);
+    }
+    window.alert(message);
   }
 
   /** Trigger a screensaver preview. */
