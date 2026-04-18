@@ -32,35 +32,6 @@ fn init_env() {
 const OPTIONS_LABEL: &str = "options";
 /// Main window label
 const MAIN_WINDOW_LABEL: &str = "main";
-/// Window label prefix for all screensaver display windows
-const SAVER_WINDOW_PREFIX: &str = "saver-display-";
-/// Window label prefix for preview windows (created by the frontend)
-const PREVIEW_WINDOW_PREFIX: &str = "preview-";
-
-/// JavaScript injected into open windows during factory reset.
-/// Clears localStorage, sessionStorage, Cache API entries, and unregisters
-/// all service workers. Each block is isolated — a failure in one does not
-/// abort the others. Uses ES5 callbacks for broadest WebKit compatibility.
-const BROWSER_STORAGE_CLEANUP_JS: &str = r#"
-(function() {
-    try { localStorage.clear(); } catch(e) {}
-    try { sessionStorage.clear(); } catch(e) {}
-    try {
-        if ('caches' in self) {
-            caches.keys().then(function(keys) {
-                keys.forEach(function(key) { caches.delete(key); });
-            });
-        }
-    } catch(e) {}
-    try {
-        if (navigator.serviceWorker) {
-            navigator.serviceWorker.getRegistrations().then(function(regs) {
-                regs.forEach(function(reg) { reg.unregister(); });
-            });
-        }
-    } catch(e) {}
-})();
-"#;
 
 /// Load persisted options from the store, falling back to env var defaults.
 /// This ensures the backend uses user-saved preferences, not just .env defaults.
@@ -389,25 +360,6 @@ fn get_options(state: tauri::State<AppState>) -> Result<AppOptions, String> {
     Ok(options.clone())
 }
 
-/// Injects browser-storage cleanup JS into all currently-open relevant windows.
-/// Best-effort: silently skips windows that are not open. Never propagates errors.
-///
-/// Windows cleaned: OPTIONS_LABEL if open, all saver-display-* windows if open.
-/// Limitation: closed windows' remote-origin storage is not reachable via eval.
-fn clean_browser_storage<R: Runtime>(app: &AppHandle<R>) {
-    if let Some(window) = app.get_webview_window(OPTIONS_LABEL) {
-        if let Err(e) = window.eval(BROWSER_STORAGE_CLEANUP_JS) {
-            eprintln!("[factory_reset] browser cleanup failed for '{}': {}", OPTIONS_LABEL, e);
-        }
-    }
-    for (label, window) in app.webview_windows() {
-        if label.starts_with(SAVER_WINDOW_PREFIX) || label.starts_with(PREVIEW_WINDOW_PREFIX) {
-            if let Err(e) = window.eval(BROWSER_STORAGE_CLEANUP_JS) {
-                eprintln!("[factory_reset] browser cleanup failed for '{}': {}", label, e);
-            }
-        }
-    }
-}
 
 /// Command to create a preview window with navigator.id injected via initialization_script.
 /// Must be created from Rust because the JS WebviewWindow API does not expose initializationScript.
@@ -438,19 +390,6 @@ fn create_preview_window<R: Runtime>(app: AppHandle<R>, url: String, label: Stri
     Ok(())
 }
 
-/// Command to clean browser storage in a specific window by label.
-/// Exposed so the frontend can trigger cleanup for windows it manages directly
-/// (e.g. preview windows, whose labels are only known to the JS side).
-/// Returns an error if the window is not found, so callers can detect mismatches.
-#[tauri::command]
-fn clean_window_browser_storage(app: AppHandle, label: String) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(&label) {
-        window.eval(BROWSER_STORAGE_CLEANUP_JS)
-            .map_err(|e| format!("eval failed for '{}': {}", label, e))
-    } else {
-        Err(format!("Window '{}' not found", label))
-    }
-}
 
 /// Command to factory reset app options
 #[tauri::command]
@@ -464,10 +403,7 @@ fn factory_reset_options<R: Runtime>(app: AppHandle<R>, state: tauri::State<AppS
     {
         let mut current = state.options.lock().unwrap();
         *current = default_options.clone();
-    } // Lock released before eval to avoid deadlock
-
-    clean_browser_storage(&app);
-
+    }
     Ok(default_options)
 }
 
@@ -638,7 +574,6 @@ pub fn run() {
             set_options,
             factory_reset_options,
             create_preview_window,
-            clean_window_browser_storage,
             evaluate_javascript,
             open_options,
             preview_screensaver,
