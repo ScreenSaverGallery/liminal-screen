@@ -1,4 +1,5 @@
-- [ ] autoupdate implementation
+- [ ] autoupdate implementation (add to liminal-api, add to options/main window, add to menu), see: https://v2.tauri.app/plugin/updater/ (the main part already implemented in updater.rs, tauri.conf.json, keys are in /${home}/.tauri/)
+- [ ] notifications (!) see: https://v2.tauri.app/plugin/notification/ (should make a plan -> check interval, no push api, url in .env?...)
 - [x] test not on a real 'saver' app, but a minimal video setup (at a time, the most problematic part)
 - [x] debug preview saver by user click -> it closes immediatelly
 - [x] remote options api (+ shared key), check, implement to remote secret
