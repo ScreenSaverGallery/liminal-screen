@@ -181,6 +181,9 @@ fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::err
 
 /// Create the system tray
 fn create_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
+    let app_name = std::env::var("VITE_APP_NAME")
+        .unwrap_or_else(|_| "Liminal Screen".to_string());
+
     // Create menu items - no Show/Hide since main window is fallback only
     let options_i = MenuItem::with_id(app, "options", "Options", true, None::<&str>)?;
     let preview_i = MenuItem::with_id(app, "preview", "Preview Screensaver", true, None::<&str>)?;
@@ -197,6 +200,7 @@ fn create_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::error
     // Build tray
     TrayIconBuilder::new()
         .icon(icon)
+        .tooltip(&app_name)
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "options" => {

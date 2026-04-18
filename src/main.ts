@@ -62,11 +62,12 @@ let initialized = false;
 async function init(): Promise<void> {
   if (initialized) return;
   initialized = true;
-  console.log("Liminal Screen - Initializing...");
+  console.log("Initializing...");
   try {
     options.set(await invoke<AppOptions>("get_options"));
     setupEventListeners();
-    console.log("Liminal Screen - Ready", options.get());
+    const name = options.get()?.appName ?? "Liminal Screen";
+    console.log(`${name} - Ready`, options.get());
   } catch (error) {
     console.error("Failed to initialize:", error);
   }
@@ -114,6 +115,22 @@ function setupEventListeners(): void {
       /* ignore */
     }
   }, 1000);
+}
+
+// ── Identity ──────────────────────────────────────────────────────────────
+
+function setIdentity(opts: AppOptions): void {
+  const nameEl = document.getElementById("app-name");
+  const descEl = document.getElementById("app-description");
+  const aboutEl = document.getElementById("about-text");
+  const titleEl = document.getElementById("app-title");
+
+  if (nameEl) nameEl.textContent = opts.appName;
+  if (descEl) descEl.textContent = opts.appDescription;
+  if (titleEl) titleEl.textContent = `${opts.appName} - Options`;
+  if (aboutEl)
+    aboutEl.textContent =
+      `${opts.appName} runs in your system tray and activates after a period of inactivity. ${opts.appDescription}`;
 }
 
 // ── Form ───────────────────────────────────────────────────────────────────
@@ -310,6 +327,9 @@ window.addEventListener("DOMContentLoaded", () => {
       saverUrlDisplay.textContent =
         (opts.debug ? opts.saverUrlDebug : opts.saverUrl) || "Not configured";
     }
+
+    // Update app identity (title, h1, subtitle, about)
+    setIdentity(opts);
   });
 
   isActive.effect((active) => {

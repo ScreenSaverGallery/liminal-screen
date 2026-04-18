@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Liminal Screen",
+  "productName": "ScreenSaverGallery",
   "version": "0.1.0",
   "identifier": "org.metazoa.tomaszatoo.liminal-screen",
   "build": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Liminal Screen",
+        "title": "ScreenSaverGallery",
         "width": 400,
         "height": 600,
         "visible": false,
@@ -45,7 +45,7 @@
       "icons/icon.ico"
     ],
     "category": "Entertainment",
-    "shortDescription": "System tray screensaver application",
-    "longDescription": "A cross-platform screensaver application built with Tauri v2 that runs in the system tray and activates after a configurable period of system inactivity."
+    "shortDescription": "The Ambient Act of Computational Art",
+    "longDescription": "The Ambient Act of Computational Art"
   }
 }

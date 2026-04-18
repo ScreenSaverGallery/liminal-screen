@@ -449,10 +449,13 @@ fn prevent_sleep_linux(state: &PowerSaveBlocker) -> Result<(), String> {
         return Ok(());
     }
 
+    let app_name = std::env::var("VITE_APP_NAME")
+        .unwrap_or_else(|_| "Liminal Screen".to_string());
+
     let result = Command::new("systemd-inhibit")
         .args(&[
             "--what=idle:sleep",
-            "--who=liminal-screen",
+            &format!("--who={}", app_name),
             "--why=Screensaver active",
             "--mode=block",
             "sleep",
@@ -629,10 +632,13 @@ fn lock_system_macos_direct() -> Result<(), String> {
 fn prevent_sleep_linux_direct() -> Result<(), String> {
     use std::process::Command;
 
+    let app_name = std::env::var("VITE_APP_NAME")
+        .unwrap_or_else(|_| "Liminal Screen".to_string());
+
     let result = Command::new("systemd-inhibit")
         .args(&[
             "--what=idle:sleep",
-            "--who=liminal-screen",
+            &format!("--who={}", app_name),
             "--why=Screensaver active",
             "--mode=block",
             "sleep",
