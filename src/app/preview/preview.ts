@@ -11,7 +11,7 @@ export class Preview {
     this.label = label || `preview-${Date.now()}`;
   }
 
-  async show(): Promise<void> {
+  async show(onClose?: () => void): Promise<void> {
     if (this.webviewWindow) return;
 
     // Create via Rust so initialization_script (navigator.id) is injected before page scripts run.
@@ -22,7 +22,10 @@ export class Preview {
     if (!win) throw new Error(`Preview window created but reference not found: ${this.label}`);
     this.webviewWindow = win;
 
-    this.webviewWindow.onCloseRequested(async () => { await this.hide(); });
+    this.webviewWindow.onCloseRequested(async () => {
+      await this.hide();
+      onClose?.();
+    });
   }
 
   async hide(): Promise<void> {
