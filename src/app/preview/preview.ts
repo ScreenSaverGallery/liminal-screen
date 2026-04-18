@@ -14,31 +14,13 @@ export class Preview {
   async show(): Promise<void> {
     if (this.webviewWindow) return;
 
-    this.webviewWindow = new WebviewWindow(this.label, {
-      url: this.url,
-      title: "Screensaver Preview",
-      width: 800,
-      height: 600,
-      resizable: true,
-      decorations: true,
-      visible: true,
-      alwaysOnTop: false,
-      skipTaskbar: false,
-    });
+    // Create via Rust so initialization_script (navigator.id) is injected before page scripts run.
+    // The JS WebviewWindow constructor does not support initializationScript in this Tauri version.
+    await invoke("create_preview_window", { url: this.url, label: this.label });
 
-    await new Promise<void>((resolve, reject) => {
-      let resolved = false;
-
-      this.webviewWindow!.once("tauri://created", () => {
-        if (!resolved) { resolved = true; resolve(); }
-      });
-      this.webviewWindow!.once("tauri://error", (error) => {
-        if (!resolved) { resolved = true; reject(new Error(`Failed to create preview window: ${error.payload}`)); }
-      });
-      setTimeout(() => {
-        if (!resolved) { resolved = true; reject(new Error("Timeout while creating preview window")); }
-      }, 5000);
-    });
+    const win = await WebviewWindow.getByLabel(this.label);
+    if (!win) throw new Error(`Preview window created but reference not found: ${this.label}`);
+    this.webviewWindow = win;
 
     this.webviewWindow.onCloseRequested(async () => { await this.hide(); });
   }

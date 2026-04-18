@@ -135,6 +135,17 @@ User preferences (timing values like `startsIn`, `displayOffIn`, etc.) are saved
 
 Users can reset to `.env` defaults via the UI (Reset button) or by deleting `options.json` from the app's data directory.
 
+Factory reset does three things:
+1. Clears `options.json` (Tauri store)
+2. Resets in-memory state to `.env` defaults
+3. Injects cleanup JavaScript into any currently-open remote windows (options window, screensaver windows) to clear `localStorage`, `sessionStorage`, Cache API entries, and unregister service workers
+
+**Limitations of browser storage cleanup:**
+
+- **Closed windows are not cleaned.** Screensaver windows are typically closed when factory reset is triggered (screensaver inactive). Their remote-origin `localStorage`/Cache data persists in the WebView data store on disk until those windows open again.
+- **Only the active saver URL domain is cleaned.** All screensaver windows at any given time load either `VITE_SAVER_URL` or `VITE_SAVER_URL_DEBUG` (based on the `debug` flag) — never both simultaneously. If those two URLs are on **different domains**, only the currently-active domain's storage is cleaned. The other domain's storage is unaffected.
+- **Main window is intentionally excluded.** It loads a local Tauri asset (`tauri://localhost`) and uses no browser storage APIs.
+
 # Development mode
 `bun run tauri dev`
 

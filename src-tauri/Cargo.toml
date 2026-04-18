@@ -22,6 +22,7 @@ tauri-plugin-store = "2"
 tauri-plugin-dialog = "2"
 tokio = "1.52.0"
 dotenv = "0.15"
+uuid = { version = "1", features = ["v4"] }
 urlencoding = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]

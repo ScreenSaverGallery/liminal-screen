@@ -32,6 +32,35 @@ fn init_env() {
 const OPTIONS_LABEL: &str = "options";
 /// Main window label
 const MAIN_WINDOW_LABEL: &str = "main";
+/// Window label prefix for all screensaver display windows
+const SAVER_WINDOW_PREFIX: &str = "saver-display-";
+/// Window label prefix for preview windows (created by the frontend)
+const PREVIEW_WINDOW_PREFIX: &str = "preview-";
+
+/// JavaScript injected into open windows during factory reset.
+/// Clears localStorage, sessionStorage, Cache API entries, and unregisters
+/// all service workers. Each block is isolated — a failure in one does not
+/// abort the others. Uses ES5 callbacks for broadest WebKit compatibility.
+const BROWSER_STORAGE_CLEANUP_JS: &str = r#"
+(function() {
+    try { localStorage.clear(); } catch(e) {}
+    try { sessionStorage.clear(); } catch(e) {}
+    try {
+        if ('caches' in self) {
+            caches.keys().then(function(keys) {
+                keys.forEach(function(key) { caches.delete(key); });
+            });
+        }
+    } catch(e) {}
+    try {
+        if (navigator.serviceWorker) {
+            navigator.serviceWorker.getRegistrations().then(function(regs) {
+                regs.forEach(function(reg) { reg.unregister(); });
+            });
+        }
+    } catch(e) {}
+})();
+"#;
 
 /// Load persisted options from the store, falling back to env var defaults.
 /// This ensures the backend uses user-saved preferences, not just .env defaults.
@@ -76,6 +105,11 @@ fn load_persisted_options<R: Runtime>(app: &tauri::App<R>) -> Result<AppOptions,
         }
     }
 
+    if let Some(instance_id) = store.get("instanceId") {
+        if let Some(val) = instance_id.as_str() {
+            options.instance_id = val.to_string();
+        }
+    }
     // URLs, app_name, app_description are never persisted — always from .env
     Ok(options)
 }
@@ -104,6 +138,8 @@ pub struct AppOptions {
     pub debug: bool,
     // Custom (fork-defined) — persisted as JSON blob, appended to saver URL as query params
     pub custom_options: serde_json::Value,
+    // Auto-generated instance UUID — persisted, regenerated on factory reset, never user-settable
+    pub instance_id: String,
 }
 
 impl Default for AppOptions {
@@ -136,6 +172,7 @@ impl Default for AppOptions {
                 .map(|s| s == "true")
                 .unwrap_or(false),
             custom_options: serde_json::Value::Object(serde_json::Map::new()),
+            instance_id: uuid::Uuid::new_v4().to_string(),
         }
     }
 }
@@ -147,7 +184,15 @@ fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::err
         eprintln!("[store] Warning: Could not load persisted options, using defaults: {}", e);
         AppOptions::default()
     });
-    
+
+    // Persist instanceId on first run (default() generated a new one; save it so it survives restarts)
+    if let Ok(store) = app.store("options.json") {
+        if store.get("instanceId").is_none() {
+            store.set("instanceId", options.instance_id.clone());
+            let _ = store.save();
+        }
+    }
+
     // Initialize app state with loaded options
     let app_state = AppState {
         active_savers: std::sync::Mutex::new(Vec::new()),
@@ -268,6 +313,15 @@ fn open_options_or_fallback<R: Runtime>(app: &AppHandle<R>) -> Result<(), String
     }
 }
 
+/// Build the initialization script that sets navigator.id to the instance UUID.
+/// Runs at document-start in every remote window before any page script executes.
+fn instance_id_init_script(instance_id: &str) -> String {
+    format!(
+        "(function(){{try{{Object.defineProperty(navigator,'id',{{value:'{}',writable:false,configurable:false}});}}catch(e){{}}}})()",
+        instance_id
+    )
+}
+
 /// Open the remote options window
 fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> Result<(), String> {
     // Check if options window already exists
@@ -277,11 +331,11 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
         return Ok(());
     }
 
-    // Get app identity from state
-    let (app_name, app_description) = {
+    // Get app identity + instance UUID from state
+    let (app_name, app_description, instance_id) = {
         let state = app.state::<AppState>();
         let options = state.options.lock().unwrap();
-        (options.app_name.clone(), options.app_description.clone())
+        (options.app_name.clone(), options.app_description.clone(), options.instance_id.clone())
     };
 
     // Parse URL and append app identity as query params
@@ -303,6 +357,7 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
         .resizable(true)
         .decorations(true)
         .visible(true)
+        .initialization_script(&instance_id_init_script(&instance_id))
         .build()
         .map_err(|e| format!("Failed to create options window: {}", e))?;
 
@@ -334,19 +389,85 @@ fn get_options(state: tauri::State<AppState>) -> Result<AppOptions, String> {
     Ok(options.clone())
 }
 
+/// Injects browser-storage cleanup JS into all currently-open relevant windows.
+/// Best-effort: silently skips windows that are not open. Never propagates errors.
+///
+/// Windows cleaned: OPTIONS_LABEL if open, all saver-display-* windows if open.
+/// Limitation: closed windows' remote-origin storage is not reachable via eval.
+fn clean_browser_storage<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window(OPTIONS_LABEL) {
+        if let Err(e) = window.eval(BROWSER_STORAGE_CLEANUP_JS) {
+            eprintln!("[factory_reset] browser cleanup failed for '{}': {}", OPTIONS_LABEL, e);
+        }
+    }
+    for (label, window) in app.webview_windows() {
+        if label.starts_with(SAVER_WINDOW_PREFIX) || label.starts_with(PREVIEW_WINDOW_PREFIX) {
+            if let Err(e) = window.eval(BROWSER_STORAGE_CLEANUP_JS) {
+                eprintln!("[factory_reset] browser cleanup failed for '{}': {}", label, e);
+            }
+        }
+    }
+}
+
+/// Command to create a preview window with navigator.id injected via initialization_script.
+/// Must be created from Rust because the JS WebviewWindow API does not expose initializationScript.
+#[tauri::command]
+fn create_preview_window<R: Runtime>(app: AppHandle<R>, url: String, label: String) -> Result<(), String> {
+    if app.get_webview_window(&label).is_some() {
+        return Ok(());
+    }
+    let instance_id = {
+        let state = app.state::<AppState>();
+        let guard = state.options.lock().unwrap();
+        guard.instance_id.clone()
+    };
+    let parsed_url: url::Url = url
+        .parse()
+        .map_err(|e| format!("Invalid preview URL '{}': {}", url, e))?;
+    WebviewWindowBuilder::new(&app, label, WebviewUrl::External(parsed_url))
+        .title("Screensaver Preview")
+        .inner_size(800.0, 600.0)
+        .resizable(true)
+        .decorations(true)
+        .visible(true)
+        .always_on_top(false)
+        .skip_taskbar(false)
+        .initialization_script(&instance_id_init_script(&instance_id))
+        .build()
+        .map_err(|e| format!("Failed to create preview window: {}", e))?;
+    Ok(())
+}
+
+/// Command to clean browser storage in a specific window by label.
+/// Exposed so the frontend can trigger cleanup for windows it manages directly
+/// (e.g. preview windows, whose labels are only known to the JS side).
+/// Returns an error if the window is not found, so callers can detect mismatches.
+#[tauri::command]
+fn clean_window_browser_storage(app: AppHandle, label: String) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(&label) {
+        window.eval(BROWSER_STORAGE_CLEANUP_JS)
+            .map_err(|e| format!("eval failed for '{}': {}", label, e))
+    } else {
+        Err(format!("Window '{}' not found", label))
+    }
+}
+
 /// Command to factory reset app options
 #[tauri::command]
 fn factory_reset_options<R: Runtime>(app: AppHandle<R>, state: tauri::State<AppState>) -> Result<AppOptions, String> {
-    // Delete the store file
+    let default_options = AppOptions::default();
+
     let store = app.store("options.json").map_err(|e| format!("Failed to open store: {}", e))?;
     store.clear();
+    store.set("instanceId", default_options.instance_id.clone());
     store.save().map_err(|e| format!("Failed to save reset: {}", e))?;
-    
-    // Reset in-memory state to defaults
-    let default_options = AppOptions::default();
-    let mut current = state.options.lock().unwrap();
-    *current = default_options.clone();
-    
+    {
+        let mut current = state.options.lock().unwrap();
+        *current = default_options.clone();
+    } // Lock released before eval to avoid deadlock
+
+    clean_browser_storage(&app);
+
     Ok(default_options)
 }
 
@@ -377,6 +498,7 @@ fn set_options<R: Runtime>(app: AppHandle<R>, state: tauri::State<AppState>, opt
             options_url: current.options_url.clone(),
             app_name: current.app_name.clone(),
             app_description: current.app_description.clone(),
+            instance_id: current.instance_id.clone(),
             ..options.clone()
         }
     };
@@ -515,6 +637,8 @@ pub fn run() {
             get_options,
             set_options,
             factory_reset_options,
+            create_preview_window,
+            clean_window_browser_storage,
             evaluate_javascript,
             open_options,
             preview_screensaver,

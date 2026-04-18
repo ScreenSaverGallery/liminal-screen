@@ -181,6 +181,11 @@ function setupUIButtonHandlers(): void {
     try {
       await invoke("factory_reset_options");
       options.set(await invoke<AppOptions>("get_options"));
+      if (previewWindow?.isOpen()) {
+        await invoke("clean_window_browser_storage", { label: previewWindow.getLabel() }).catch(
+          (e) => console.warn("[reset] preview window storage cleanup failed:", e)
+        );
+      }
       // Form updates reactively via options.effect() — no dialog needed
     } catch (error) {
       console.error("Failed to reset options:", error);

@@ -11,4 +11,5 @@ export interface AppOptions {
   runOnBattery: boolean;
   debug: boolean;
   customOptions: Record<string, string | number | boolean>;
+  instanceId: string;
 }
