@@ -1,144 +1,131 @@
-// Liminal Screen - Main Application Entry Point
+// Liminal Screen — Options Window
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { PowerMonitor } from "./app/power-monitor/power-monitor";
 import { Preview } from "./app/preview/preview";
-import { Storage } from "./app/storage/storage";
-import type { AppOptions } from "./app/storage/storage";
-import {
-  OptionsManager,
-  registerServiceWorker,
-  openExternalLink,
-} from "./app/options/options";
 import { Signal } from "./app/reactive";
+import type { AppOptions } from "./app/types";
 
-let isScreensaverActive = false;
-let previewWindow: Preview | null = null;
-let displayOffTimeout: number | null = null;
+// ── State ──────────────────────────────────────────────────────────────────
 
 const options = new Signal<AppOptions | null>(null);
 
-const MONITORING_INTERVAL_MS = 1000;
+interface ScreensaverStatus { active: boolean; idleSeconds: number; }
+const status = new Signal<ScreensaverStatus>({ active: false, idleSeconds: 0 });
 
-// UI Elements (cached after DOM load)
-let idleTimeElement: HTMLElement | null = null;
-let statusTextElement: HTMLElement | null = null;
-let statusDotElement: HTMLElement | null = null;
-let startsInInput: HTMLInputElement | null = null;
-let displayOffInput: HTMLInputElement | null = null;
+const isActive   = status.derive(s => s.active);
+const idleSignal = status.derive(s => s.idleSeconds);
+
+let previewWindow: Preview | null = null;
+
+// ── UI Elements ────────────────────────────────────────────────────────────
+
+let idleTimeElement:    HTMLElement | null = null;
+let statusTextElement:  HTMLElement | null = null;
+let statusDotElement:   HTMLElement | null = null;
+let startsInInput:      HTMLInputElement | null = null;
+let displayOffInput:    HTMLInputElement | null = null;
 let requirePassInInput: HTMLInputElement | null = null;
-let runOnBatteryInput: HTMLInputElement | null = null;
-let debugInput: HTMLInputElement | null = null;
-let saverUrlDisplay: HTMLElement | null = null;
+let runOnBatteryInput:  HTMLInputElement | null = null;
+let debugInput:         HTMLInputElement | null = null;
+let saverUrlDisplay:    HTMLElement | null = null;
 
-async function init(): Promise<void> {
-  console.log("Liminal Screen - Initializing UI...");
+// ── Helpers ────────────────────────────────────────────────────────────────
 
-  try {
-    await Storage.init();
-    await OptionsManager.init();
-    await loadOptions();
-    await registerServiceWorker();
-    setupEventListeners();
-
-    console.log("Liminal Screen - UI Initialized successfully");
-    console.log("Current options:", options.get());
-  } catch (error) {
-    console.error("Failed to initialize application:", error);
+async function registerServiceWorker(): Promise<void> {
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
   }
 }
 
-async function loadOptions(): Promise<void> {
+async function openExternalLink(url: string): Promise<void> {
+  try {
+    await openUrl(url);
+  } catch {
+    window.open(url, "_blank");
+  }
+}
+
+function formatIdle(secs: number): string {
+  if (secs < 60)   return `Idle: ${Math.floor(secs)}s`;
+  if (secs < 3600) return `Idle: ${Math.floor(secs / 60)}m ${Math.floor(secs % 60)}s`;
+  return `Idle: ${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+
+async function init(): Promise<void> {
+  console.log("Liminal Screen - Initializing...");
   try {
     options.set(await invoke<AppOptions>("get_options"));
-    console.log("Options loaded:", options.get());
+    await registerServiceWorker();
+    setupEventListeners();
+    console.log("Liminal Screen - Ready", options.get());
   } catch (error) {
-    console.error("Failed to load options:", error);
+    console.error("Failed to initialize:", error);
   }
 }
 
 function setupEventListeners(): void {
-  listen<AppOptions>("options-updated", (event) => {
-    console.log("Options updated:", event.payload);
-    options.set(event.payload);
+  // Options sync
+  listen<AppOptions>("options-updated", (event) => options.set(event.payload));
+  listen("reset-options", async () => {
+    try { options.set(await invoke<AppOptions>("get_options")); } catch { /* ignore */ }
   });
 
-  listen("preview-screensaver", () => {
-    console.log("Preview screensaver requested");
-    previewScreensaver();
+  // Window management
+  listen("preview-screensaver", () => previewScreensaver());
+  listen("open-options-window", async () => {
+    try { await invoke("open_options"); } catch { /* ignore */ }
   });
-
-  listen("open-options-window", () => {
-    console.log("Open options window requested");
-    openOptionsWindow();
-  });
-
-  listen("reset-options", () => {
-    console.log("Reset options requested");
-    loadOptions();
-  });
-
   getCurrentWindow().onCloseRequested((event: any) => {
     event.preventDefault();
     getCurrentWindow().hide();
   });
 
-  listen("screensaver-started", async () => {
-    console.log("Screensaver started (from Rust engine)");
-    isScreensaverActive = true;
-    updateStatusDisplay();
-  });
+  // Screensaver state — driven by Tauri events, not polling
+  listen("screensaver-started", () => status.update(s => ({ ...s, active: true })));
+  listen("screensaver-ended",   () => status.update(s => ({ ...s, active: false })));
 
-  listen("screensaver-ended", async () => {
-    console.log("Screensaver ended (from Rust engine)");
-    isScreensaverActive = false;
-    updateStatusDisplay();
-
-    if (displayOffTimeout) {
-      clearTimeout(displayOffTimeout);
-      displayOffTimeout = null;
-    }
-  });
-
+  // Idle time — poll every second (no Rust event available for this yet)
   setInterval(async () => {
     try {
-      const status = await invoke<any>("get_screensaver_status");
-      isScreensaverActive = status.is_active;
-      updateStatusDisplay();
+      const secs = await PowerMonitor.getSystemIdleTime();
+      status.update(s => ({ ...s, idleSeconds: secs }));
+    } catch { /* ignore */ }
+  }, 1000);
+}
 
-      if (idleTimeElement) {
-        try {
-          const idleTime = await PowerMonitor.getSystemIdleTime();
-          updateIdleTimeDisplay(idleTime);
-        } catch (e) {
-          console.warn("Failed to get idle time for display:", e);
-        }
-      }
-    } catch (e) {
-      console.warn("Failed to sync with screensaver engine:", e);
-    }
-  }, MONITORING_INTERVAL_MS);
+// ── Form ───────────────────────────────────────────────────────────────────
+
+function cacheUIElements(): void {
+  idleTimeElement    = document.getElementById("idle-time");
+  statusTextElement  = document.getElementById("status-text");
+  statusDotElement   = document.querySelector(".status-dot");
+  startsInInput      = document.getElementById("starts-in")       as HTMLInputElement | null;
+  displayOffInput    = document.getElementById("display-off")     as HTMLInputElement | null;
+  requirePassInInput = document.getElementById("require-pass-in") as HTMLInputElement | null;
+  runOnBatteryInput  = document.getElementById("run-on-battery")  as HTMLInputElement | null;
+  debugInput         = document.getElementById("debug-mode")      as HTMLInputElement | null;
+  saverUrlDisplay    = document.getElementById("saver-url-display");
+
+  [startsInInput, displayOffInput, requirePassInInput, runOnBatteryInput, debugInput]
+    .forEach(el => el?.addEventListener("change", () => saveOptions(true)));
 }
 
 function setupUIButtonHandlers(): void {
-  document.getElementById("save-btn")?.addEventListener("click", async () => {
-    console.log("Save button clicked");
-    await saveOptions();
-  });
-
-  document.getElementById("preview-btn")?.addEventListener("click", async () => {
-    console.log("Preview button clicked");
-    await previewScreensaver();
-  });
-
+  document.getElementById("save-btn")?.addEventListener("click", () => saveOptions());
+  document.getElementById("preview-btn")?.addEventListener("click", () => previewScreensaver());
   document.getElementById("reset-btn")?.addEventListener("click", async () => {
     if (!confirm("Reset all options to defaults?")) return;
     try {
-      options.set(await invoke<AppOptions>("factory_reset_options"));
-      alert("Options reset to defaults");
+      await invoke("factory_reset_options");
+      options.set(await invoke<AppOptions>("get_options"));
+      // Form updates reactively via options.effect() — no alert needed
     } catch (error) {
       console.error("Failed to reset options:", error);
       alert("Failed to reset options. Please try again.");
@@ -146,45 +133,15 @@ function setupUIButtonHandlers(): void {
   });
 }
 
-function updateIdleTimeDisplay(idleSeconds: number): void {
-  if (!idleTimeElement) return;
-
-  if (idleSeconds < 60) {
-    idleTimeElement.textContent = `Idle: ${Math.floor(idleSeconds)}s`;
-  } else if (idleSeconds < 3600) {
-    const minutes = Math.floor(idleSeconds / 60);
-    const seconds = Math.floor(idleSeconds % 60);
-    idleTimeElement.textContent = `Idle: ${minutes}m ${seconds}s`;
-  } else {
-    const hours = Math.floor(idleSeconds / 3600);
-    const minutes = Math.floor((idleSeconds % 3600) / 60);
-    idleTimeElement.textContent = `Idle: ${hours}h ${minutes}m`;
-  }
-}
-
-function updateStatusDisplay(): void {
-  if (!statusTextElement || !statusDotElement) return;
-
-  if (isScreensaverActive) {
-    statusTextElement.textContent = "Active";
-    statusDotElement.classList.remove("inactive");
-    statusDotElement.classList.add("active");
-  } else {
-    statusTextElement.textContent = "Inactive";
-    statusDotElement.classList.remove("active");
-    statusDotElement.classList.add("inactive");
-  }
-}
-
 async function saveOptions(silent = false): Promise<void> {
   const current = options.get();
   if (!current) return;
 
-  const startsIn = startsInInput ? parseFloat(startsInInput.value) : current.startsIn;
-  const displayOffIn = displayOffInput ? parseFloat(displayOffInput.value) : current.displayOffIn;
+  const startsIn     = startsInInput      ? parseFloat(startsInInput.value)      : current.startsIn;
+  const displayOffIn = displayOffInput    ? parseFloat(displayOffInput.value)    : current.displayOffIn;
   const requirePassIn = requirePassInInput ? parseFloat(requirePassInInput.value) : current.requirePassIn;
-  const runOnBattery = runOnBatteryInput ? runOnBatteryInput.checked : current.runOnBattery;
-  const debug = debugInput ? debugInput.checked : current.debug;
+  const runOnBattery = runOnBatteryInput  ? runOnBatteryInput.checked            : current.runOnBattery;
+  const debug        = debugInput         ? debugInput.checked                   : current.debug;
 
   if (isNaN(startsIn) || startsIn < 0.1) {
     if (!silent) alert("Start After must be at least 0.1 minutes");
@@ -204,56 +161,29 @@ async function saveOptions(silent = false): Promise<void> {
       options: { ...current, startsIn, displayOffIn, requirePassIn, runOnBattery, debug },
     });
     options.set(await invoke<AppOptions>("get_options"));
-    console.log("Options saved:", options.get());
     if (!silent) alert("Settings saved successfully!");
-  } catch (error) {
-    console.error("Failed to save options:", error);
+  } catch {
     if (!silent) alert("Failed to save settings. Please try again.");
   }
 }
 
-function cacheUIElements(): void {
-  idleTimeElement = document.getElementById("idle-time");
-  statusTextElement = document.getElementById("status-text");
-  statusDotElement = document.querySelector(".status-dot");
-  startsInInput = document.getElementById("starts-in") as HTMLInputElement | null;
-  displayOffInput = document.getElementById("display-off") as HTMLInputElement | null;
-  requirePassInInput = document.getElementById("require-pass-in") as HTMLInputElement | null;
-  runOnBatteryInput = document.getElementById("run-on-battery") as HTMLInputElement | null;
-  debugInput = document.getElementById("debug-mode") as HTMLInputElement | null;
-  saverUrlDisplay = document.getElementById("saver-url-display");
-
-  [startsInInput, displayOffInput, requirePassInInput, runOnBatteryInput, debugInput]
-    .forEach((el) => el?.addEventListener("change", () => saveOptions(true)));
-}
+// ── Preview ────────────────────────────────────────────────────────────────
 
 async function previewScreensaver(): Promise<void> {
-  if (previewWindow) {
-    await previewWindow.hide();
-  }
-
+  if (previewWindow) await previewWindow.hide();
   try {
     const opts = options.get();
-    const previewUrl = opts?.debug
-      ? import.meta.env.VITE_SAVER_URL_DEBUG || "https://save.screensaver.gallery/debug"
-      : import.meta.env.VITE_SAVER_URL || "https://save.screensaver.gallery";
-
-    previewWindow = new Preview(previewUrl);
+    const url = opts?.debug
+      ? (import.meta.env.VITE_SAVER_URL_DEBUG || "https://save.screensaver.gallery/debug")
+      : (import.meta.env.VITE_SAVER_URL       || "https://save.screensaver.gallery");
+    previewWindow = new Preview(url);
     await previewWindow.show();
-
-    console.log("Preview window created. Use window.closePreviewWindow() to close it manually if needed.");
   } catch (error) {
     console.error("Failed to create preview window:", error);
   }
 }
 
-async function openOptionsWindow(): Promise<void> {
-  try {
-    await invoke("open_options");
-  } catch (error) {
-    console.error("Failed to open options window:", error);
-  }
-}
+// ── Public API ─────────────────────────────────────────────────────────────
 
 export async function forceDeactivateScreensaver(): Promise<void> {
   try {
@@ -264,7 +194,7 @@ export async function forceDeactivateScreensaver(): Promise<void> {
 }
 
 export function isScreensaverRunning(): boolean {
-  return isScreensaverActive;
+  return isActive.get();
 }
 
 export function getCurrentOptions(): AppOptions | null {
@@ -275,32 +205,44 @@ export async function openLink(url: string): Promise<void> {
   await openExternalLink(url);
 }
 
+// ── Bootstrap ──────────────────────────────────────────────────────────────
+
 window.addEventListener("DOMContentLoaded", () => {
   cacheUIElements();
   setupUIButtonHandlers();
 
-  // Single reactive effect — reruns automatically whenever options.set() is called
+  // Reactive effects — each fires immediately then whenever the signal changes
+
   options.effect((opts) => {
     if (!opts) return;
-    if (startsInInput) startsInInput.value = String(opts.startsIn);
-    if (displayOffInput) displayOffInput.value = String(opts.displayOffIn);
+    if (startsInInput)      startsInInput.value      = String(opts.startsIn);
+    if (displayOffInput)    displayOffInput.value    = String(opts.displayOffIn);
     if (requirePassInInput) requirePassInInput.value = String(opts.requirePassIn);
-    if (runOnBatteryInput) runOnBatteryInput.checked = opts.runOnBattery;
-    if (debugInput) debugInput.checked = opts.debug;
+    if (runOnBatteryInput)  runOnBatteryInput.checked = opts.runOnBattery;
+    if (debugInput)         debugInput.checked        = opts.debug;
     if (saverUrlDisplay) {
       saverUrlDisplay.textContent =
         (opts.debug ? opts.saverUrlDebug : opts.saverUrl) || "Not configured";
     }
   });
 
+  isActive.effect((active) => {
+    if (!statusDotElement || !statusTextElement) return;
+    statusTextElement.textContent = active ? "Active" : "Inactive";
+    statusDotElement.classList.toggle("active",   active);
+    statusDotElement.classList.toggle("inactive", !active);
+  });
+
+  idleSignal.effect((secs) => {
+    if (idleTimeElement) idleTimeElement.textContent = formatIdle(secs);
+  });
+
   init();
 });
 
+// Also init immediately for hidden-window scenarios (Tauri may not fire DOMContentLoaded)
 try {
-  console.log("Liminal Screen immediate initialization attempt");
-  init().catch((error) => {
-    console.error("Immediate init failed:", error);
-  });
+  init().catch(console.error);
 } catch (error) {
   console.error("Immediate init threw error:", error);
 }

@@ -1,892 +1,165 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="</head>UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Liminal Screen - Remote Options</title>
-    <style>
-        :root {
-            --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
-            --font-size: 14px;
-            --line-height: 1.5;
-            --font-weight: 400;
-            --bg-primary: #ffffff;
-            --bg-secondary: #f5f5f5;
-            --bg-tertiary: #e8e8e8;
-            --text-primary: #1a1a1a;
-            --text-secondary: #666666;
-            --text-muted: #999999;
-            --accent-primary: #6366f1;
-            --accent-primary-hover: #4f46e5;
-            --accent-secondary: #8b5cf6;
-            --danger: #ef4444;
-            --danger-hover: #dc2626;
-            --success: #22c55e;
-            --warning: #f59e0b;
-            --border-color: #e5e5e5;
-            --shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-            --shadow-lg: 0 4px 6px rgba(0, 0, 0, 0.1);
-            --spacing-xs: 4px;
-            --spacing-sm: 8px;
-            --spacing-md: 16px;
-            --spacing-lg: 24px;
-            --spacing-xl: 32px;
-            --radius-sm: 4px;
-            --radius-md: 8px;
-            --radius-lg: 12px;
-            --transition-fast: 0.15s ease;
-            --transition-normal: 0.25s ease;
-        }
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Options</title>
+  <style>
+    :root {
+      --bg: #1a1a1a;
+      --surface: #252525;
+      --border: #333;
+      --text: #e0e0e0;
+      --muted: #888;
+      --accent: #6d9eeb;
+      --accent-hover: #8ab4f8;
+      --danger: #e57373;
+      --radius: 8px;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); min-height: 100vh; }
 
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --bg-primary: #1a1a1a;
-                --bg-secondary: #2a2a2a;
-                --bg-tertiary: #333333;
-                --text-primary: #f5f5f5;
-                --text-secondary: #a0a0a0;
-                --text-muted: #666666;
-                --border-color: #3a3a3a;
-                --shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-                --shadow-lg: 0 4px 6px rgba(0, 0, 0, 0.4);
-            }
-        }
+    header {
+      padding: 20px 24px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 { font-size: 18px; font-weight: 600; }
+    header p { font-size: 13px; color: var(--muted); margin-top: 3px; }
 
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+    main { padding: 24px; max-width: 560px; }
 
-        html, body {
-            font-family: var(--font-family);
-            font-size: var(--font-size);
-            line-height: var(--line-height);
-            font-weight: var(--font-weight);
-            color: var(--text-primary);
-            background-color: var(--bg-secondary);
-            min-height: 100vh;
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
-        }
+    .section { margin-bottom: 28px; }
+    .section h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 12px; }
 
-        .app-container {
-            max-width: 400px;
-            margin: 0 auto;
-            padding: var(--spacing-md);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            gap: var(--spacing-lg);
-        }
+    .field { margin-bottom: 14px; }
+    .field label { display: block; font-size: 13px; margin-bottom: 5px; }
+    .field input[type="number"],
+    .field input[type="text"] {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      padding: 8px 10px;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .field input:focus { border-color: var(--accent); }
+    .field .hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
 
-        .app-header {
-            text-align: center;
-            padding: var(--spacing-lg) 0;
-            border-bottom: 1px solid var(--border-color);
-        }
+    .toggle-field { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .toggle-field label { font-size: 13px; cursor: pointer; flex: 1; }
+    .toggle-field input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); }
 
-        .app-header h1 {
-            font-size: 1.75rem;
-            font-weight: 700;
-            margin-bottom: var(--spacing-xs);
-            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
+    .actions { display: flex; gap: 10px; margin-top: 24px; }
+    button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 13px;
+      cursor: pointer;
+      font-weight: 500;
+      transition: background 0.15s;
+    }
+    .btn-primary { background: var(--accent); color: #000; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { border-color: var(--accent); }
+    .btn-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+    .btn-danger:hover { background: rgba(229,115,115,0.1); }
 
-        .app-header .subtitle {
-            font-size: 0.875rem;
-            color: var(--text-secondary);
-            font-weight: 500;
-        }
+    #status-bar {
+      font-size: 12px;
+      color: var(--muted);
+      padding: 8px 24px;
+      border-top: 1px solid var(--border);
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #status-bar .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--muted);
+    }
+    #status-bar .dot.connected { background: #81c995; }
 
-        .connection-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            margin-top: var(--spacing-sm);
-            padding: 2px 10px;
-            border-radius: 12px;
-            font-size: 0.75rem;
-            font-weight: 600;
-        }
-
-        .connection-badge.connected {
-            background: rgba(34, 197, 94, 0.15);
-            color: var(--success);
-        }
-
-        .connection-badge.disconnected {
-            background: rgba(239, 68, 68, 0.15);
-            color: var(--danger);
-        }
-
-        .connection-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-        }
-
-        .connection-badge.connected .connection-dot {
-            background: var(--success);
-            box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.2);
-        }
-
-        .connection-badge.disconnected .connection-dot {
-            background: var(--danger);
-            box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2);
-        }
-
-        section {
-            background-color: var(--bg-primary);
-            border-radius: var(--radius-lg);
-            padding: var(--spacing-md);
-            box-shadow: var(--shadow);
-        }
-
-        section h2 {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-bottom: var(--spacing-md);
-            border-bottom: 1px solid var(--border-color);
-            padding-bottom: var(--spacing-sm);
-        }
-
-        .status-section {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .status-indicator {
-            display: flex;
-            align-items: center;
-            gap: var(--spacing-sm);
-        }
-
-        .status-dot {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            display: inline-block;
-            transition: background-color var(--transition-normal);
-        }
-
-        .status-dot.inactive {
-            background-color: var(--text-muted);
-            box-shadow: 0 0 0 3px rgba(153, 153, 153, 0.2);
-        }
-
-        .status-dot.active {
-            background-color: var(--success);
-            box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.2);
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.6; }
-        }
-
-        .status-text {
-            font-weight: 600;
-            font-size: 0.9375rem;
-            color: var(--text-primary);
-        }
-
-        .idle-time {
-            font-family: "SF Mono", Monaco, monospace;
-            font-size: 0.875rem;
-            color: var(--text-secondary);
-            background-color: var(--bg-secondary);
-            padding: var(--spacing-xs) var(--spacing-sm);
-            border-radius: var(--radius-sm);
-        }
-
-        .option-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: var(--spacing-sm) 0;
-            border-bottom: 1px solid var(--border-color);
-        }
-
-        .option-item:last-child { border-bottom: none; }
-        .option-item.checkbox-item { gap: var(--spacing-sm); }
-
-        .option-label {
-            font-weight: 500;
-            color: var(--text-secondary);
-            font-size: 0.875rem;
-        }
-
-        .option-input {
-            width: 100px;
-            padding: var(--spacing-xs) var(--spacing-sm);
-            font-size: 0.875rem;
-            font-family: inherit;
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius-sm);
-            background-color: var(--bg-secondary);
-            color: var(--text-primary);
-            text-align: right;
-        }
-
-        .option-input:focus {
-            outline: none;
-            border-color: var(--accent-primary);
-            box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
-        }
-
-        .option-checkbox {
-            width: 20px;
-            height: 20px;
-            cursor: pointer;
-            accent-color: var(--accent-primary);
-        }
-
-        .form-hint {
-            margin-top: var(--spacing-sm);
-            padding: var(--spacing-sm);
-            background-color: var(--bg-secondary);
-            border-radius: var(--radius-sm);
-        }
-
-        .form-hint small {
-            color: var(--text-muted);
-            font-size: 0.75rem;
-        }
-
-        .actions-section {
-            display: flex;
-            flex-direction: column;
-            gap: var(--spacing-sm);
-        }
-
-        .button-row {
-            display: flex;
-            gap: var(--spacing-sm);
-            flex-wrap: wrap;
-        }
-
-        .button-row button { flex: 1; min-width: 120px; }
-
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: var(--spacing-sm) var(--spacing-md);
-            font-size: 0.875rem;
-            font-weight: 600;
-            font-family: inherit;
-            border: none;
-            border-radius: var(--radius-md);
-            cursor: pointer;
-            transition: all var(--transition-fast);
-            box-shadow: var(--shadow);
-            height: 40px;
-        }
-
-        .btn:hover {
-            transform: translateY(-1px);
-            box-shadow: var(--shadow-lg);
-        }
-
-        .btn:active {
-            transform: translateY(0);
-            box-shadow: var(--shadow);
-        }
-
-        .btn-primary { background-color: var(--accent-primary); color: white; }
-        .btn-primary:hover { background-color: var(--accent-primary-hover); }
-        .btn-secondary { background-color: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); }
-        .btn-secondary:hover { background-color: var(--bg-secondary); }
-        .btn-danger { background-color: var(--danger); color: white; }
-        .btn-danger:hover { background-color: var(--danger-hover); }
-        .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
-
-        .info-section { font-size: 0.875rem; }
-
-        .info-text {
-            color: var(--text-secondary);
-            margin-bottom: var(--spacing-sm);
-            line-height: 1.6;
-        }
-
-        .info-text:last-child { margin-bottom: 0; }
-
-        .app-footer {
-            text-align: center;
-            padding-top: var(--spacing-md);
-            margin-top: auto;
-            border-top: 1px solid var(--border-color);
-        }
-
-        .app-footer p { font-size: 0.75rem; color: var(--text-muted); }
-
-        .demo-notice {
-            background: rgba(245, 158, 11, 0.1);
-            border: 1px solid rgba(245, 158, 11, 0.3);
-            border-radius: var(--radius-md);
-            padding: var(--spacing-sm) var(--spacing-md);
-            font-size: 0.8125rem;
-            color: var(--warning);
-            text-align: center;
-        }
-
-        button:focus-visible, a:focus-visible {
-            outline: 2px solid var(--accent-primary);
-            outline-offset: 2px;
-        }
-
-        @media (max-width: 360px) {
-            .app-container { padding: var(--spacing-sm); }
-            .button-row { flex-direction: column; }
-            .button-row button { width: 100%; }
-            .status-section { flex-direction: column; gap: var(--spacing-sm); text-align: center; }
-        }
-    </style>
+    #custom-fields { /* populated by JS */ }
+  </style>
 </head>
 <body>
-    <main class="app-container">
-        <header class="app-header">
-            <h1>Liminal Screen</h1>
-            <p class="subtitle">Remote Options</p>
-            <div id="connection-badge" class="connection-badge disconnected">
-                <span class="connection-dot"></span>
-                <span id="connection-text">Connecting...</span>
-            </div>
-        </header>
-
-        <div id="demo-notice" class="demo-notice" style="display: none;">
-            Running in browser mode — changes are not persisted.
-        </div>
-
-        <section class="status-section">
-            <div class="status-indicator">
-                <span class="status-dot inactive" id="status-dot"></span>
-                <span class="status-text" id="status-text">Inactive</span>
-            </div>
-            <div class="idle-time" id="idle-time">Idle: --</div>
-        </section>
-
-        <section class="options-section">
-            <h2>Settings</h2>
-            <form id="options-form" onsubmit="return false;">
-                <div class="option-item">
-                    <label class="option-label" for="starts-in">Start After (minutes):</label>
-                    <input type="number" id="starts-in" name="startsIn" min="0.1" max="60" step="0.1" value="0.2" class="option-input" />
-                </div>
-                <div class="option-item">
-                    <label class="option-label" for="display-off">Display Off (minutes):</label>
-                    <input type="number" id="display-off" name="displayOffIn" min="0.5" max="120" step="0.5" value="1" class="option-input" />
-                </div>
-                <div class="option-item checkbox-item">
-                    <label class="option-label" for="run-on-battery">Run on Battery:</label>
-                    <input type="checkbox" id="run-on-battery" name="runOnBattery" class="option-checkbox" />
-                </div>
-                <div class="option-item checkbox-item">
-                    <label class="option-label" for="debug-mode">Debug Mode:</label>
-                    <input type="checkbox" id="debug-mode" name="debug" class="option-checkbox" />
-                </div>
-                <div class="form-hint">
-                    <small>Options are saved to the Liminal Screen app in real time.</small>
-                </div>
-            </form>
-        </section>
-
-        <section class="actions-section">
-            <h2>Actions</h2>
-            <div class="button-row">
-                <button id="save-btn" class="btn btn-primary" disabled>Save Settings</button>
-                <button id="preview-btn" class="btn btn-secondary" disabled>Preview Screensaver</button>
-            </div>
-            <div class="button-row">
-                <button id="reset-btn" class="btn btn-danger" disabled>Reset to Defaults</button>
-            </div>
-        </section>
-
-        <section class="info-section">
-            <h2>About</h2>
-            <p class="info-text">
-                This is a remote options page for Liminal Screen. It communicates with the
-                main application through the Liminal Screen API.
-            </p>
-            <p class="info-text">
-                Use the system tray icon to preview the screensaver or quit the application.
-            </p>
-        </section>
-
-        <footer class="app-footer">
-            <p>Liminal Screen Remote Options &middot; v0.1.0</p>
-        </footer>
-    </main>
-
-    <script>
-        // ============================================================
-        // Liminal Screen — Remote Options Page
-        // ============================================================
-        //
-        // This page demonstrates how to build a remote options interface
-        // using the @liminal-screen/api package. It can be served from
-        // any HTTPS URL and loaded by the Liminal Screen app's options
-        // window.
-        //
-        // Two modes of operation:
-        //   1. Tauri mode — loaded inside a Tauri webview window,
-        //      communicates via IPC using window.__TAURI__
-        //   2. Browser mode — loaded in a regular browser for
-        //      development/demo, uses mock data
-
-        // ---- State ----
-        let api = null;
-        let isInTauri = false;
-        let currentOptions = null;
-        let unsubscribeOptions = null;
-        let idleInterval = null;
-
-        // ---- UI Element References ----
-        const elements = {
-            connectionBadge: document.getElementById('connection-badge'),
-            connectionText: document.getElementById('connection-text'),
-            demoNotice: document.getElementById('demo-notice'),
-            statusDot: document.getElementById('status-dot'),
-            statusText: document.getElementById('status-text'),
-            idleTime: document.getElementById('idle-time'),
-            startsIn: document.getElementById('starts-in'),
-            displayOff: document.getElementById('display-off'),
-            runOnBattery: document.getElementById('run-on-battery'),
-            debugMode: document.getElementById('debug-mode'),
-            saveBtn: document.getElementById('save-btn'),
-            previewBtn: document.getElementById('preview-btn'),
-            resetBtn: document.getElementById('reset-btn'),
-        };
-
-        // ---- Environment Detection ----
-        function detectTauri() {
-            try {
-                return typeof window !== 'undefined' && window.__TAURI__ !== undefined;
-            } catch {
-                return false;
-            }
-        }
-
-        // ---- Connection Status ----
-        function setConnected(connected) {
-            if (connected) {
-                elements.connectionBadge.className = 'connection-badge connected';
-                elements.connectionText.textContent = 'Connected to Liminal Screen';
-                elements.saveBtn.disabled = false;
-                elements.previewBtn.disabled = false;
-                elements.resetBtn.disabled = false;
-            } else {
-                elements.connectionBadge.className = 'connection-badge disconnected';
-                elements.connectionText.textContent = 'Not connected — demo mode';
-                elements.demoNotice.style.display = 'block';
-                elements.saveBtn.disabled = false; // allow mock save
-                elements.previewBtn.disabled = true;
-                elements.resetBtn.disabled = false;
-            }
-        }
-
-        // ---- LiminalAPI Wrapper ----
-        // This wraps the @liminal-screen/api package when running in Tauri,
-        // or provides a mock implementation when running in a browser.
-
-        class RemoteOptionsAPI {
-            constructor() {
-                this.isTauri = detectTauri();
-                this.tauriInvoke = null;
-                this.tauriListen = null;
-                this.tauriEmit = null;
-                this.unlisteners = [];
-                this.mockOptions = {
-                    startsIn: 0.2,
-                    displayOffIn: 1.0,
-                    requirePassIn: 1.0,
-                    runOnBattery: false,
-                    debug: false,
-                    saverUrl: 'https://save.screensaver.gallery',
-                    saverUrlDebug: 'https://save.screensaver.gallery/debug',
-                    optionsUrl: '',
-                };
-            }
-
-            async init() {
-                if (this.isTauri && window.__TAURI__) {
-                    // Use the global Tauri API injected by withGlobalTauri
-                    this.tauriInvoke = window.__TAURI__.core.invoke;
-                    this.tauriListen = window.__TAURI__.event.listen;
-                    this.tauriEmit = window.__TAURI__.event.emit;
-
-                    // Listen for options updates from main app
-                    try {
-                        const unlisten = await this.tauriListen('options-updated', (event) => {
-                            console.log('Options updated from main app:', event.payload);
-                            this.onOptionsUpdate(event.payload);
-                        });
-                        this.unlisteners.push(unlisten);
-                    } catch (e) {
-                        console.warn('Could not listen for options-updated:', e);
-                    }
-
-                    // Listen for idle time updates from Rust-side monitoring
-                    try {
-                        const unlisten = await this.tauriListen('idle-time-update', (event) => {
-                            this.onIdleTimeUpdate(event.payload);
-                        });
-                        this.unlisteners.push(unlisten);
-                    } catch (e) {
-                        console.warn('Could not listen for idle-time-update:', e);
-                    }
-                }
-
-                return this;
-            }
-
-            async destroy() {
-                for (const unlisten of this.unlisteners) {
-                    try { unlisten(); } catch {}
-                }
-                this.unlisteners = [];
-            }
-
-            async getOptions() {
-                if (this.isTauri && this.tauriInvoke) {
-                    try {
-                        return await this.tauriInvoke('get_options');
-                    } catch (error) {
-                        console.error('Failed to get options via Tauri:', error);
-                        throw error;
-                    }
-                }
-                return { ...this.mockOptions };
-            }
-
-            async setOptions(partial) {
-                if (this.isTauri && this.tauriInvoke) {
-                    try {
-                        // Merge with current options to send a complete AppOptions struct
-                        const current = await this.getOptions();
-                        const merged = { ...current, ...partial };
-                        await this.tauriInvoke('set_options', { options: merged });
-                        return;
-                    } catch (error) {
-                        console.error('Failed to set options via Tauri:', error);
-                        throw error;
-                    }
-                }
-                // Mock: save locally
-                this.mockOptions = { ...this.mockOptions, ...partial };
-                console.log('Mock: options saved', this.mockOptions);
-            }
-
-            async factoryReset() {
-                if (this.isTauri && this.tauriInvoke) {
-                    try {
-                        return await this.tauriInvoke('factory_reset_options');
-                    } catch (error) {
-                        console.error('Failed to factory reset via Tauri:', error);
-                        throw error;
-                    }
-                }
-                // Mock: reset to defaults
-                this.mockOptions = {
-                    startsIn: 0.2,
-                    displayOffIn: 1.0,
-                    requirePassIn: 1.0,
-                    runOnBattery: false,
-                    debug: false,
-                    saverUrl: 'https://save.screensaver.gallery',
-                    saverUrlDebug: 'https://save.screensaver.gallery/debug',
-                    optionsUrl: '',
-                };
-                return { ...this.mockOptions };
-            }
-
-            async previewScreensaver() {
-                if (this.isTauri && this.tauriEmit) {
-                    try {
-                        await this.tauriEmit('preview-screensaver', {});
-                        return;
-                    } catch (error) {
-                        console.error('Failed to preview screensaver:', error);
-                        throw error;
-                    }
-                }
-                console.log('Mock: preview screensaver requested');
-                alert('Preview would start in the Liminal Screen app.');
-            }
-
-            async getSystemIdleTime() {
-                if (this.isTauri && this.tauriInvoke) {
-                    try {
-                        return await this.tauriInvoke('get_system_idle_time');
-                    } catch (error) {
-                        console.error('Failed to get idle time:', error);
-                        return 0;
-                    }
-                }
-                // Mock: return a slowly incrementing value
-                if (!this._mockIdleStart) this._mockIdleStart = Date.now();
-                return Math.floor((Date.now() - this._mockIdleStart) / 1000);
-            }
-
-            async isScreensaverActive() {
-                if (this.isTauri && this.tauriInvoke) {
-                    try {
-                        return await this.tauriInvoke('is_screensaver_active');
-                    } catch (error) {
-                        console.error('Failed to get screensaver status:', error);
-                        return false;
-                    }
-                }
-                return false;
-            }
-
-            // Event handlers (overridden by the page)
-            onOptionsUpdate(options) {
-                loadOptionsIntoForm(options);
-            }
-
-            onIdleTimeUpdate(idleSeconds) {
-                updateIdleTimeDisplay(idleSeconds);
-            }
-        }
-
-        // ---- UI Functions ----
-
-        function formatIdleTime(idleSeconds) {
-            if (idleSeconds < 60) {
-                return `Idle: ${Math.floor(idleSeconds)}s`;
-            } else if (idleSeconds < 3600) {
-                const minutes = Math.floor(idleSeconds / 60);
-                const seconds = Math.floor(idleSeconds % 60);
-                return `Idle: ${minutes}m ${seconds}s`;
-            } else {
-                const hours = Math.floor(idleSeconds / 3600);
-                const minutes = Math.floor((idleSeconds % 3600) / 60);
-                return `Idle: ${hours}h ${minutes}m`;
-            }
-        }
-
-        function updateIdleTimeDisplay(idleSeconds) {
-            if (elements.idleTime) {
-                elements.idleTime.textContent = formatIdleTime(idleSeconds);
-            }
-        }
-
-        function updateStatusDisplay(isActive) {
-            if (!elements.statusText || !elements.statusDot) return;
-
-            if (isActive) {
-                elements.statusText.textContent = 'Active';
-                elements.statusDot.classList.remove('inactive');
-                elements.statusDot.classList.add('active');
-            } else {
-                elements.statusText.textContent = 'Inactive';
-                elements.statusDot.classList.remove('active');
-                elements.statusDot.classList.add('inactive');
-            }
-        }
-
-        function loadOptionsIntoForm(options) {
-            if (!options) return;
-
-            currentOptions = options;
-
-            // Tauri v2 auto-converts snake_case Rust fields to camelCase in JS
-            if (elements.startsIn) {
-                elements.startsIn.value = String(options.startsIn ?? options.starts_in ?? 0.2);
-            }
-            if (elements.displayOff) {
-                elements.displayOff.value = String(options.displayOffIn ?? options.display_off_in ?? 1.0);
-            }
-            if (elements.runOnBattery) {
-                elements.runOnBattery.checked = options.runOnBattery ?? options.run_on_battery ?? false;
-            }
-            if (elements.debugMode) {
-                elements.debugMode.checked = options.debug ?? false;
-            }
-        }
-
-        function getOptionsFromForm() {
-            return {
-                startsIn: elements.startsIn ? parseFloat(elements.startsIn.value) : 0.2,
-                displayOffIn: elements.displayOff ? parseFloat(elements.displayOff.value) : 1.0,
-                runOnBattery: elements.runOnBattery ? elements.runOnBattery.checked : false,
-                debug: elements.debugMode ? elements.debugMode.checked : false,
-            };
-        }
-
-        // ---- Actions ----
-
-        async function saveOptions() {
-            const newOptions = getOptionsFromForm();
-
-            // Validate
-            if (isNaN(newOptions.startsIn) || newOptions.startsIn < 0.1) {
-                alert('Start After must be at least 0.1 minutes');
-                return;
-            }
-            if (isNaN(newOptions.displayOffIn) || newOptions.displayOffIn < 0.5) {
-                alert('Display Off must be at least 0.5 minutes');
-                return;
-            }
-
-            try {
-                elements.saveBtn.disabled = true;
-                elements.saveBtn.textContent = 'Saving...';
-
-                await api.setOptions(newOptions);
-
-                elements.saveBtn.textContent = 'Saved!';
-                setTimeout(() => {
-                    elements.saveBtn.textContent = 'Save Settings';
-                    elements.saveBtn.disabled = false;
-                }, 1500);
-            } catch (error) {
-                console.error('Failed to save options:', error);
-                alert('Failed to save settings. Please try again.');
-                elements.saveBtn.textContent = 'Save Settings';
-                elements.saveBtn.disabled = false;
-            }
-        }
-
-        async function previewScreensaver() {
-            try {
-                elements.previewBtn.disabled = true;
-                await api.previewScreensaver();
-                setTimeout(() => { elements.previewBtn.disabled = false; }, 2000);
-            } catch (error) {
-                console.error('Failed to preview screensaver:', error);
-                alert('Failed to preview screensaver.');
-                elements.previewBtn.disabled = false;
-            }
-        }
-
-        async function resetOptions() {
-            if (!confirm('Reset all options to defaults?')) return;
-
-            try {
-                elements.resetBtn.disabled = true;
-                const defaults = await api.factoryReset();
-                loadOptionsIntoForm(defaults);
-                alert('Options reset to defaults');
-            } catch (error) {
-                console.error('Failed to reset options:', error);
-                alert('Failed to reset options.');
-            } finally {
-                elements.resetBtn.disabled = false;
-            }
-        }
-
-        // ---- Idle Time Polling (fallback when Rust-side events aren't available) ----
-
-        async function pollIdleTime() {
-            try {
-                const idleTime = await api.getSystemIdleTime();
-                updateIdleTimeDisplay(idleTime);
-
-                const isActive = await api.isScreensaverActive();
-                updateStatusDisplay(isActive);
-            } catch (error) {
-                // Silently ignore — the Rust-side event listener handles updates
-            }
-        }
-
-        function startIdlePolling() {
-            if (idleInterval) clearInterval(idleInterval);
-            idleInterval = setInterval(pollIdleTime, 1000);
-        }
-
-        function stopIdlePolling() {
-            if (idleInterval) {
-                clearInterval(idleInterval);
-                idleInterval = null;
-            }
-        }
-
-        // ---- Auto-Save on Input Change ----
-
-        let saveTimeout = null;
-
-        function scheduleAutoSave() {
-            // Debounce: save 800ms after the last change
-            if (saveTimeout) clearTimeout(saveTimeout);
-            saveTimeout = setTimeout(async () => {
-                const newOptions = getOptionsFromForm();
-                try {
-                    await api.setOptions(newOptions);
-                } catch (error) {
-                    console.error('Auto-save failed:', error);
-                }
-            }, 800);
-        }
-
-        function setupAutoSave() {
-            const inputs = [elements.startsIn, elements.displayOff];
-            const checkboxes = [elements.runOnBattery, elements.debugMode];
-
-            inputs.forEach((input) => {
-                if (input) input.addEventListener('input', scheduleAutoSave);
-            });
-            checkboxes.forEach((cb) => {
-                if (cb) cb.addEventListener('change', scheduleAutoSave);
-            });
-        }
-
-        // ---- Initialization ----
-
-        async function init() {
-            console.log('Liminal Screen Remote Options — Initializing...');
-
-            // Create API instance
-            api = new RemoteOptionsAPI();
-            isInTauri = api.isTauri;
-
-            // Initialize
-            await api.init();
-
-            if (isInTauri) {
-                setConnected(true);
-                console.log('Running in Tauri environment — IPC active');
-            } else {
-                setConnected(false);
-                console.log('Running in browser — demo mode');
-            }
-
-            // Load current options
-            try {
-                const options = await api.getOptions();
-                loadOptionsIntoForm(options);
-            } catch (error) {
-                console.error('Failed to load options:', error);
-            }
-
-            // Set up button handlers
-            elements.saveBtn.addEventListener('click', saveOptions);
-            elements.previewBtn.addEventListener('click', previewScreensaver);
-            elements.resetBtn.addEventListener('click', resetOptions);
-
-            // Enable auto-save
-            setupAutoSave();
-
-            // Start idle time polling (as fallback to Rust-side events)
-            startIdlePolling();
-
-            console.log('Liminal Screen Remote Options — Ready');
-        }
-
-        // Start when DOM is ready
-        document.addEventListener('DOMContentLoaded', init);
-
-        // Cleanup
-        window.addEventListener('beforeunload', () => {
-            stopIdlePolling();
-            if (api) api.destroy();
-        });
-    </script>
+  <header>
+    <h1 id="app-name">Options</h1>
+    <p id="app-description"></p>
+  </header>
+
+  <main>
+    <div class="section">
+      <h2>Timing</h2>
+      <div class="field">
+        <label for="starts-in">Activate after (minutes)</label>
+        <input type="number" id="starts-in" min="0.1" max="1440" step="0.1" value="5" />
+        <div class="hint">Minutes of inactivity before the screensaver starts</div>
+      </div>
+      <div class="field">
+        <label for="display-off">Display off after (minutes)</label>
+        <input type="number" id="display-off" min="0.5" max="1440" step="0.5" value="10" />
+        <div class="hint">Minutes before the display turns off (0.5 minimum)</div>
+      </div>
+      <div class="field">
+        <label for="require-pass-in">Require password after (minutes, 0 = disabled)</label>
+        <input type="number" id="require-pass-in" min="0" max="1440" step="1" value="0" />
+        <div class="hint">Lock the system after this many minutes (0 disables locking)</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Power</h2>
+      <div class="toggle-field">
+        <input type="checkbox" id="run-on-battery" />
+        <label for="run-on-battery">Run on battery power</label>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Developer</h2>
+      <div class="toggle-field">
+        <input type="checkbox" id="debug-mode" />
+        <label for="debug-mode">Debug mode (loads debug screensaver URL)</label>
+      </div>
+    </div>
+
+    <!-- Fork-defined custom fields are rendered here by JS -->
+    <div id="custom-fields"></div>
+
+    <div class="actions">
+      <button class="btn-primary" id="save-btn">Save</button>
+      <button class="btn-secondary" id="preview-btn">Preview</button>
+      <button class="btn-danger" id="reset-btn">Reset to defaults</button>
+    </div>
+  </main>
+
+  <div id="status-bar">
+    <span class="dot" id="status-dot"></span>
+    <span id="status-text">Connecting…</span>
+  </div>
+
+  <!-- Register service worker for offline support -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
+    }
+  </script>
+
+  <!-- liminal-api — use CDN or local dist -->
+  <script src="../../dist/liminal-api.global.js"></script>
+  <!-- Reference main.js (compiled from main.ts via `bun run build`) -->
+  <script type="module" src="./main.js"></script>
 </body>
 </html>

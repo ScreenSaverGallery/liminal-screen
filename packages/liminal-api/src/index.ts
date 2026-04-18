@@ -8,6 +8,11 @@
  *   const options = await liminalAPI.getOptions();
  *   await liminalAPI.setOptions({ startsIn: 5, displayOffIn: 10, ... });
  *   await liminalAPI.startAutoSync((opts) => renderForm(opts));
+ *
+ * Reactive quick start:
+ *   const store = createOptionsStore(liminalAPI);
+ *   store.signal.effect((opts) => { if (opts) myInput.value = String(opts.startsIn); });
+ *   saveBtn.addEventListener('click', () => store.save(collectForm()));
  */
 
 export type {
@@ -17,6 +22,9 @@ export type {
   SetOptionsPayload,
 } from './types';
 import type { AppOptions, SetOptionsPayload } from './types';
+
+export { Signal } from './reactive';
+export { createOptionsStore } from './store';
 
 // ── Tauri globals helpers ───────────────────────────────────────────────────
 

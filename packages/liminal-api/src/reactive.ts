@@ -1,5 +1,5 @@
 /**
- * Minimal reactive signal — similar to Solid.js createSignal or a Svelte writable store.
+ * Minimal reactive signal — zero dependencies, safe for CDN distribution.
  *
  * Usage:
  *   const count = new Signal(0);

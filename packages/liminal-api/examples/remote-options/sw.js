@@ -4,7 +4,6 @@
 
 const CACHE = 'liminal-options-v1';
 
-// Assets to pre-cache on install
 const PRECACHE = [
   './',
   './index.html',
@@ -18,7 +17,6 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
-  // Delete old caches
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))),
@@ -27,7 +25,6 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Only handle GET requests for same-origin assets
   if (event.request.method !== 'GET') return;
 
   event.respondWith(
@@ -41,7 +38,6 @@ self.addEventListener('fetch', (event) => {
         })
         .catch(() => null);
 
-      // Return cached immediately, update in background
       return cached ?? await fetchPromise ?? new Response('Offline', { status: 503 });
     }),
   );
