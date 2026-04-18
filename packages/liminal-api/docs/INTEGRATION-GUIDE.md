@@ -2,302 +2,201 @@
 
 ## Overview
 
-This guide explains how third-party developers can integrate with the Liminal Screen application using the official API. The API provides a standardized way to create custom options pages that can communicate with the main Liminal Screen application.
+This guide explains how to create a custom remote options page for a Liminal Screen fork. The options page is a regular HTML page hosted at a URL you control. Liminal Screen loads it in a webview and communicates via the `@liminal-screen/api` library.
 
 ## Prerequisites
 
-Before you begin, ensure you have:
-
-- Basic knowledge of HTML, CSS, and JavaScript
-- Access to a web server or static hosting for your options page
-- Understanding of the Liminal Screen application features
+- A web server or static hosting for your options page
+- `withGlobalTauri: true` set in `tauri.conf.json` (already the default in Liminal Screen)
 
 ## Getting Started
 
-### Installation
-
-The Liminal Screen API can be installed via npm:
+### Option A: npm package
 
 ```bash
 npm install @liminal-screen/api
 ```
 
-Or loaded directly from a CDN:
+```javascript
+import { liminalAPI, createOptionsStore } from '@liminal-screen/api';
+```
+
+### Option B: CDN (no build step)
 
 ```html
-<script type="module" src="https://unpkg.com/@liminal-screen/api/dist/index.js"></script>
+<script src="https://unpkg.com/@liminal-screen/api/dist/liminal-api.global.js"></script>
+<script>
+  const { liminalAPI, createOptionsStore } = LiminalAPI;
+</script>
 ```
 
-### Basic Usage
+## Reactive Pattern (Recommended)
 
-Here's a minimal example to get started:
-
-```html
-<!DOCTYPE html>
-<html>
-<head>
-    <title>My Liminal Options</title>
-</head>
-<body>
-    <form id="options-form">
-        <input type="number" id="starts-in" placeholder="Start after (minutes)" />
-        <button type="submit">Save</button>
-    </form>
-
-    <script type="module">
-        import { liminalAPI } from '@liminal-screen/api';
-
-        // Initialize the API
-        await liminalAPI.init();
-
-        // Load current options
-        const options = await liminalAPI.getOptions();
-        document.getElementById('starts-in').value = options.startsIn;
-
-        // Handle form submission
-        document.getElementById('options-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const startsIn = parseFloat(document.getElementById('starts-in').value);
-            await liminalAPI.setOptions({ startsIn: startsIn });
-        });
-    </script>
-</body>
-</html>
-```
-
-## API Reference
-
-### Initialization
-
-Always initialize the API before use:
+Use `createOptionsStore()` for a declarative UI that auto-updates when options change:
 
 ```javascript
-import { liminalAPI } from '@liminal-screen/api';
+const store = createOptionsStore(liminalAPI);
 
-await liminalAPI.init();
+// Re-render whenever options change (fires immediately + on every update)
+store.signal.effect((opts) => {
+  if (!opts) return;
+  document.getElementById('starts-in').value = String(opts.startsIn);
+  document.getElementById('app-name').textContent = opts.appName;
+  document.getElementById('app-description').textContent = opts.appDescription;
+});
+
+// Save collected form data
+document.getElementById('save-btn').addEventListener('click', () => {
+  store.save(collectForm());
+});
+
+// Reset to .env defaults (with confirmation)
+document.getElementById('reset-btn').addEventListener('click', async () => {
+  if (!await liminalAPI.ask('Reset all options to defaults?', { title: 'Reset', kind: 'warning' })) return;
+  await store.reset();
+});
+
+// Clean up on page unload
+window.addEventListener('beforeunload', () => store.destroy());
 ```
 
-The API automatically detects whether it's running in a Tauri environment and adjusts its behavior accordingly.
+## Imperative Pattern
 
-### Getting Options
-
-Retrieve the current application options:
+If you prefer manual control:
 
 ```javascript
-const options = await liminalAPI.getOptions();
-console.log(options);
-```
+// Load options
+const opts = await liminalAPI.getOptions();
+document.getElementById('starts-in').value = String(opts.startsIn);
 
-**Response Structure:**
-```typescript
-{
-  startsIn: number;        // Time in minutes before screensaver starts
-  displayOffIn: number;    // Time in minutes before display turns off
-  requirePassIn: number;  // Time in minutes before password required
-  runOnBattery: boolean;  // Whether to run on battery power
-  debug: boolean;          // Debug mode enabled
-  saverUrl: string;        // Main screensaver URL
-  saverUrlDebug: string;  // Debug screensaver URL
-  optionsUrl: string;      // Options page URL
+// Save
+await liminalAPI.setOptions({ startsIn: 5, displayOffIn: 10, /* ... */ });
+
+// Reset
+if (await liminalAPI.ask('Reset?')) {
+  await liminalAPI.resetOptions();
 }
+
+// Listen for external updates
+await liminalAPI.startAutoSync((updatedOpts) => {
+  document.getElementById('starts-in').value = String(updatedOpts.startsIn);
+});
 ```
 
-### Setting Options
+## App Identity Fields
 
-Update application options:
+`AppOptions` includes read-only identity fields that come from the fork's `.env`:
+
+| Field | Source | Purpose |
+|-------|--------|---------|
+| `appName` | `VITE_APP_NAME` | Display in page heading, title |
+| `appDescription` | `VITE_APP_DESCRIPTION` | Page subtitle |
+| `saverUrl` | `VITE_SAVER_URL` | Screensaver URL (production) |
+| `saverUrlDebug` | `VITE_SAVER_URL_DEBUG` | Screensaver URL (debug mode) |
+| `optionsUrl` | `VITE_OPTIONS_URL` | This options page URL |
+
+These are set by the backend from `.env` and **cannot be changed** by `setOptions()`. Use them for branding:
 
 ```javascript
+store.signal.effect((opts) => {
+  if (!opts) return;
+  document.getElementById('app-name').textContent = opts.appName;
+  document.title = `${opts.appName} Options`;
+});
+```
+
+## Custom Options
+
+Forks can define custom key/value fields that get appended to the screensaver URL as query parameters:
+
+```javascript
+// In your options page logic
+const CUSTOM_FIELDS = [
+  { key: 'theme', label: 'Theme', type: 'text', defaultValue: 'dark' },
+  { key: 'speed', label: 'Speed', type: 'number', defaultValue: 1.0, min: 0.1, max: 5, step: 0.1 },
+];
+
 await liminalAPI.setOptions({
-  startsIn: 0.5,
-  debug: true
+  // ...mandatory fields...
+  customOptions: { theme: 'dark', speed: 1.5 },
 });
 ```
 
-You can update any subset of options. Only the provided fields will be updated.
+The screensaver URL will include `?theme=dark&speed=1.5`.
 
-### Resetting Options
+## Dialogs
 
-Reset all options to factory defaults:
-
-```javascript
-const defaultOptions = await liminalAPI.resetOptions();
-console.log('Options reset to:', defaultOptions);
-```
-
-### Previewing Screensaver
-
-Trigger a preview of the screensaver:
+Inside Tauri, `ask()` and `showMessage()` use native OS dialogs via `tauri-plugin-dialog`. In browser fallback mode, they use `confirm()` and `alert()`.
 
 ```javascript
-await liminalAPI.previewScreensaver();
-```
-
-### Listening for Updates
-
-Subscribe to options updates from the main application:
-
-```javascript
-const unsubscribe = liminalAPI.onOptionsUpdate((options) => {
-  console.log('Options updated:', options);
-  // Update your UI here
+// Confirmation dialog
+const confirmed = await liminalAPI.ask('Are you sure?', {
+  title: 'Confirm',
+  kind: 'warning',
+  okLabel: 'Yes',
+  cancelLabel: 'No',
 });
 
-// Later, to unsubscribe:
-unsubscribe();
+// Message dialog
+await liminalAPI.showMessage('Settings saved!', {
+  title: 'Success',
+  kind: 'info',
+});
 ```
 
-### Cleanup
-
-When you're done using the API, call `destroy()` to clean up all listeners:
-
-```javascript
-liminalAPI.destroy();
-```
+**Important:** Always use these methods instead of native `confirm()` / `alert()`. Tauri v2's WKWebView silently suppresses native JavaScript dialogs.
 
 ## Environment Detection
 
-The API automatically detects the environment:
-
 ```javascript
-if (liminalAPI.isInTauri()) {
-  console.log("Running in Liminal Screen app");
+if (liminalAPI.isInTauri) {
+  // Real Tauri IPC — full functionality
 } else {
-  console.log("Running in browser (demo mode)");
+  // Browser — mock data, console logging, no preview
 }
 ```
 
-In Tauri environments, all operations communicate with the main application. In browser environments, operations use mock implementations for testing.
-
 ## Error Handling
 
-All API methods may throw `LiminalAPIError`:
-
 ```javascript
+import { LiminalAPIError } from '@liminal-screen/api';
+
 try {
-  await liminalAPI.setOptions({ startsIn: 0.5 });
+  await liminalAPI.setOptions(options);
 } catch (error) {
   if (error instanceof LiminalAPIError) {
-    console.error("API Error:", error.message);
+    await liminalAPI.showMessage(`Failed to save: ${error.message}`, { kind: 'error' });
   }
 }
 ```
 
-## Best Practices
-
-### 1. Always Initialize First
-
-```javascript
-// Good
-await liminalAPI.init();
-const options = await liminalAPI.getOptions();
-
-// Bad - may fail if not initialized
-const options = await liminalAPI.getOptions();
-```
-
-### 2. Handle Errors Gracefully
-
-```javascript
-try {
-  await liminalAPI.setOptions({ startsIn: newValue });
-  showSuccess("Settings saved!");
-} catch (error) {
-  showError("Failed to save settings");
-}
-```
-
-### 3. Validate User Input
-
-```javascript
-const startsIn = parseFloat(input.value);
-if (isNaN(startsIn) || startsIn < 0.1) {
-  showError("Start time must be at least 0.1 minutes");
-  return;
-}
-```
-
-### 4. Provide Visual Feedback
-
-```javascript
-// Show loading state
-showLoading(true);
-
-try {
-  await liminalAPI.setOptions(formData);
-  showSuccess("Settings saved!");
-} catch (error) {
-  showError(error.message);
-} finally {
-  showLoading(false);
-}
-```
-
-## Security Considerations
-
-- All IPC communication is sandboxed by Tauri
-- Remote options pages cannot access sensitive system APIs directly
-- Options updates are validated by the main application
-- User consent is required for certain operations
-
 ## Deployment
 
-### Testing Locally
+1. Build and host your options page at a public HTTPS URL
+2. Set `VITE_OPTIONS_URL` in your `.env`:
 
-During development, you can test your options page in a regular browser. The API will operate in demo mode with mock data.
-
-### Production Deployment
-
-Deploy your options page to any static hosting service. Ensure your page is accessible via HTTPS for production use.
-
-### Configuring Liminal Screen
-
-To use your custom options page:
-
-1. Host your HTML file at a publicly accessible URL
-2. Set the `VITE_OPTIONS_URL` environment variable to point to your page
-3. Restart the Liminal Screen application
-
-Example `.env` configuration:
-```
-VITE_OPTIONS_URL=https://your-domain.com/my-options.html
+```bash
+VITE_OPTIONS_URL="https://your-domain.com/options.html"
 ```
 
-## Troubleshooting
+3. Rebuild the Liminal Screen app — it will load your options page in the options window
 
-### API Not Loading
+The backend appends `appName` and `appDescription` as query parameters to your URL, so you can also read them from `URLSearchParams` if needed (though using the API is simpler).
 
-Ensure you're importing the API correctly:
+## Reference Implementation
 
-```javascript
-// Correct
-import { liminalAPI } from '@liminal-screen/api';
+See `examples/remote-options/` in the `@liminal-screen/api` package for a complete, production-ready options page with:
 
-// Incorrect
-import liminalAPI from '@liminal-screen/api';
-```
+- Reactive store integration
+- Form validation
+- Native dialog confirmation for reset
+- Custom fields support
+- Service worker for offline caching
+- Identity branding from `opts.appName` / `opts.appDescription`
 
-### Operations Not Working
+## Security
 
-Check if you're running in the correct environment:
-
-```javascript
-if (!liminalAPI.isInTauri()) {
-  console.warn("API operations only work in Liminal Screen app");
-}
-```
-
-### CORS Issues
-
-When testing locally, you may encounter CORS issues. These are normal and indicate the API is working correctly in browser mode.
-
-## Support
-
-For issues with the API or integration questions:
-
-1. Check the [API documentation](API.md)
-2. Review the example implementations
-3. Open an issue on the Liminal Screen GitHub repository
-
-## Versioning
-
-This API follows semantic versioning. Breaking changes will be communicated in advance and result in major version increments.
+- All IPC is sandboxed by Tauri
+- Remote options pages cannot access sensitive system APIs directly
+- Identity fields are read-only — backend ignores user-submitted values for `saverUrl`, `appName`, etc.
+- Dialog permissions (`dialog:allow-ask`, `dialog:allow-message`) must be granted in Tauri capability files
