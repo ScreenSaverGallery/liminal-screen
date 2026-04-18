@@ -46,6 +46,18 @@
     ],
     "category": "Entertainment",
     "shortDescription": "The Ambient Act of Computational Art",
-    "longDescription": "The Ambient Act of Computational Art"
+    "longDescription": "The Ambient Act of Computational Art",
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "CONTENT FROM PUBLICKEY.PEM",
+      "endpoints": [
+        "https://github.com/screensavergallery/liminal-screen/releases/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

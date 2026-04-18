@@ -5,6 +5,7 @@ pub mod autoplay_media;
 pub mod display_manager;
 pub mod power_monitor;
 pub mod screensaver_engine;
+pub mod updater;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -196,6 +197,14 @@ fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::err
     } else {
         println!("Screensaver engine started successfully");
     }
+
+    // Spawn update checker in background
+    let handle = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = updater::update(handle).await {
+            eprintln!("[updater] Error: {}", e);
+        }
+    });
 
     Ok(())
 }
