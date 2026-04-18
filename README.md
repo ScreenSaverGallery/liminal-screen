@@ -27,15 +27,15 @@ cp .env.example .env
 
 ```bash
 # App Identity
-VITE_APP_NAME=Your App Name
-VITE_APP_DESCRIPTION=Your app description here
+VITE_APP_NAME="Your App Name"
+VITE_APP_DESCRIPTION="Your app description here"
 
 # Screensaver URLs
-VITE_SAVER_URL=https://your-domain.com/screensaver
-VITE_SAVER_URL_DEBUG=https://your-domain.com/screensaver?debug=true
+VITE_SAVER_URL="https://your-domain.com/screensaver"
+VITE_SAVER_URL_DEBUG="https://your-domain.com/screensaver?debug=true"
 
 # Remote Options (optional)
-VITE_OPTIONS_URL=https://your-domain.com/options.html
+VITE_OPTIONS_URL="https://your-domain.com/options.html"
 ```
 
 **Important:** The Rust backend reads these environment variables at **build time**. Make sure `.env` is sourced before building, or export them explicitly:
@@ -58,7 +58,19 @@ VITE_DEFAULT_RUN_ON_BATTERY=false # Run on battery power?
 VITE_DEFAULT_DEBUG=false          # Enable debug mode?
 ```
 
-### 3. Edit `src-tauri/tauri.conf.json`
+### 3. Replace the App Icon
+
+  Note: This will be improved in future, as generating the icon set will become part of the build process.
+
+Tauri ships with a default icon set based on its logo — not what you want for your fork. Place a `app-icon.png` (minimum 1024x1024px) in the project root and run:
+
+```bash
+bun tauri icon
+```
+
+This generates all platform icon files in `src-tauri/icons/` (macOS `.icns`, Windows `.ico`, iOS, Android, and all PNG sizes). See [Tauri Icons docs](https://v2.tauri.app/develop/icons/) for details.
+
+### 4. Edit `src-tauri/tauri.conf.json`
 
 **Critical: Change the bundle identifier to avoid conflicts with other forks:**
 
@@ -82,7 +94,7 @@ VITE_DEFAULT_DEBUG=false          # Enable debug mode?
 
 **Why bundle identifier matters:** If two apps have the same identifier on one system, they'll share preferences, keychain entries, and may crash each other. Each fork MUST use a unique identifier.
 
-### 4. Edit `package.json` (Optional)
+### 5. Edit `package.json` (Optional)
 
 Update the package name for your fork:
 
@@ -93,7 +105,7 @@ Update the package name for your fork:
 }
 ```
 
-### 5. Build
+### 6. Build
 
 ```bash
 # Install dependencies
@@ -134,26 +146,50 @@ bun run tauri build
 
 ### Frontend (`src/`)
 
-- `main.ts` - Application entry point, initialization
-- `app/storage/storage.ts` - Persistent configuration storage
-- `app/options/options.ts` - Options window management
-- `app/power-monitor/` - System idle time detection
-- `app/preview/` - Preview window for testing screensaver
+Minimal, reactive UI — no framework. Uses a lightweight `Signal` class for state management and reactive effects.
+
+- `main.ts` — Application entry point: initialization, reactive effects, form handling, app identity (`setIdentity`), dialog interactions via `tauri-plugin-dialog`
+- `app/reactive.ts` — Generic `Signal<T>` class with `.derive()` and `.effect()` for reactive data flow
+- `app/types.ts` — `AppOptions` TypeScript type mirroring the Rust struct
+- `app/preview/preview.ts` — Preview window creation and management
+- `app/power-monitor/power-monitory.ts` — Bridge to Rust idle-time detection
+- `styles.css` — Application styles
 
 ### Backend (`src-tauri/src/`)
 
-- `screensaver_engine.rs` - Core screensaver logic, multi-monitor window management
-- `display_manager.rs` - Monitor detection and positioning
-- `power_monitor.rs` - Platform-specific idle time detection
-- `autoplay_media.rs` - Media autoplay configuration for WKWebView/WebView2
+The Rust backend is the engine — it handles all screensaver lifecycle, window management, power monitoring, and persistence.
+
+- `main.rs` — App entry, Tauri plugin registration (store, dialog, opener)
+- `lib.rs` — Core setup: window creation, system tray with dynamic tooltip (from `VITE_APP_NAME`), options CRUD, screensaver engine orchestration, `factory_reset_options` command
+- `screensaver_engine.rs` — Screensaver state machine: monitors idle time, creates/destroys fullscreen windows on activation/deactivation, manages multi-display layout
+- `display_manager.rs` — Monitor detection and logical coordinate calculation for multi-monitor fullscreen positioning
+- `power_monitor.rs` — Platform-specific idle time detection (macOS IOKit, Windows `GetLastInputInfo`, Linux systemd-inhibit + X11 screensaver queries)
+- `autoplay_media.rs` — Per-window autoplay permission configuration for WKWebView (macOS) and WebView2 (Windows)
+
+### Shared Library (`packages/liminal-api/`)
+
+Reusable SDK for fork developers who host their own remote options page. Works via `__TAURI__` globals (no npm install required).
+
+- `src/index.ts` — `LiminalAPI` class: `getOptions`, `setOptions`, `resetOptions`, `previewScreensaver`, `startAutoSync`, `ask`, `showMessage`
+- `src/store.ts` — `createOptionsStore` — signal-based reactive state with polling sync
+- `src/reactive.ts` — Lightweight `Signal<T>` for remote options page
+- `src/security.ts` — Tauri invoke validation and sanitization
+- `src/types.ts` — `AppOptions`, `SetOptionsPayload`, `CustomOptions` types
+- `examples/remote-options/` — Reference options page (HTML + JS + service worker) ready to deploy
+
+### Build Scripts (`scripts/`)
+
+- `set-identity.ts` — Reads `.env` and patches `tauri.conf.json` with `VITE_APP_NAME` (productName, window title) and `VITE_APP_DESCRIPTION`. Runs automatically via `predev`/`prebuild` lifecycle hooks. Never touches the bundle `identifier`.
 
 ### Configuration Layers
 
 | Layer | File | Purpose |
 |-------|------|---------|
-| Build-time identity | `tauri.conf.json` | App name, bundle ID, metadata |
-| Runtime URLs | `.env` | Screensaver URLs, defaults |
-| User preferences | `options.json` | User's timing settings (auto-created) |
+| Build-time identity | `tauri.conf.json` | App name, bundle ID, metadata — auto-patched from `.env` by `set-identity.ts` |
+| Runtime identity | `.env` | `VITE_APP_NAME`, `VITE_APP_DESCRIPTION` — read by Rust backend and forwarded to frontend via `AppOptions` |
+| Runtime URLs | `.env` | `VITE_SAVER_URL`, `VITE_SAVER_URL_DEBUG`, `VITE_OPTIONS_URL` |
+| Runtime defaults | `.env` | `VITE_DEFAULT_STARTS_IN`, etc. — fallback values for first install |
+| User preferences | `options.json` | User's saved timing settings (auto-created, persisted across updates) |
 
 ## Technical Details
 
