@@ -21,7 +21,7 @@ fn init_env() {
     {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let env_path = std::path::PathBuf::from(manifest_dir).join("../.env");
-        
+
         if let Err(e) = dotenv::from_path(&env_path) {
             eprintln!("[dotenv] Warning: Could not load {:?}: {}", env_path, e);
         }
@@ -35,13 +35,15 @@ const MAIN_WINDOW_LABEL: &str = "main";
 
 /// Load persisted options from the store, falling back to env var defaults.
 /// This ensures the backend uses user-saved preferences, not just .env defaults.
-fn load_persisted_options<R: Runtime>(app: &tauri::App<R>) -> Result<AppOptions, Box<dyn std::error::Error>> {
+fn load_persisted_options<R: Runtime>(
+    app: &tauri::App<R>,
+) -> Result<AppOptions, Box<dyn std::error::Error>> {
     // Start with defaults from env vars
     let mut options = AppOptions::default();
-    
+
     // Try to load persisted options from store
     let store = app.store("options.json")?;
-    
+
     // Load each field if present in store, overriding defaults
     if let Some(starts_in) = store.get("startsIn") {
         if let Some(val) = starts_in.as_f64() {
@@ -68,7 +70,7 @@ fn load_persisted_options<R: Runtime>(app: &tauri::App<R>) -> Result<AppOptions,
             options.debug = val;
         }
     }
-    
+
     // Load custom options (JSON blob)
     if let Some(custom) = store.get("customOptions") {
         if custom.is_object() {
@@ -152,7 +154,10 @@ impl Default for AppOptions {
 fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
     // Load persisted options from store, falling back to env var defaults
     let options = load_persisted_options(app).unwrap_or_else(|e| {
-        eprintln!("[store] Warning: Could not load persisted options, using defaults: {}", e);
+        eprintln!(
+            "[store] Warning: Could not load persisted options, using defaults: {}",
+            e
+        );
         AppOptions::default()
     });
 
@@ -197,8 +202,7 @@ fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::err
 
 /// Create the system tray
 fn create_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
-    let app_name = std::env::var("VITE_APP_NAME")
-        .unwrap_or_else(|_| "Liminal Screen".to_string());
+    let app_name = std::env::var("VITE_APP_NAME").unwrap_or_else(|_| "Liminal Screen".to_string());
 
     // Create menu items - no Show/Hide since main window is fallback only
     let options_i = MenuItem::with_id(app, "options", "Options", true, None::<&str>)?;
@@ -312,7 +316,11 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
     let (app_name, app_description, instance_id) = {
         let state = app.state::<AppState>();
         let options = state.options.lock().unwrap();
-        (options.app_name.clone(), options.app_description.clone(), options.instance_id.clone())
+        (
+            options.app_name.clone(),
+            options.app_description.clone(),
+            options.instance_id.clone(),
+        )
     };
 
     // Parse URL and append app identity as query params
@@ -366,11 +374,14 @@ fn get_options(state: tauri::State<AppState>) -> Result<AppOptions, String> {
     Ok(options.clone())
 }
 
-
 /// Command to create a preview window with navigator.id injected via initialization_script.
 /// Must be created from Rust because the JS WebviewWindow API does not expose initializationScript.
 #[tauri::command]
-fn create_preview_window<R: Runtime>(app: AppHandle<R>, url: String, label: String) -> Result<(), String> {
+fn create_preview_window<R: Runtime>(
+    app: AppHandle<R>,
+    url: String,
+    label: String,
+) -> Result<(), String> {
     if app.get_webview_window(&label).is_some() {
         return Ok(());
     }
@@ -396,16 +407,22 @@ fn create_preview_window<R: Runtime>(app: AppHandle<R>, url: String, label: Stri
     Ok(())
 }
 
-
 /// Command to factory reset app options
 #[tauri::command]
-fn factory_reset_options<R: Runtime>(app: AppHandle<R>, state: tauri::State<AppState>) -> Result<AppOptions, String> {
+fn factory_reset_options<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<AppState>,
+) -> Result<AppOptions, String> {
     let default_options = AppOptions::default();
 
-    let store = app.store("options.json").map_err(|e| format!("Failed to open store: {}", e))?;
+    let store = app
+        .store("options.json")
+        .map_err(|e| format!("Failed to open store: {}", e))?;
     store.clear();
     store.set("instanceId", default_options.instance_id.clone());
-    store.save().map_err(|e| format!("Failed to save reset: {}", e))?;
+    store
+        .save()
+        .map_err(|e| format!("Failed to save reset: {}", e))?;
     {
         let mut current = state.options.lock().unwrap();
         *current = default_options.clone();
@@ -428,7 +445,11 @@ fn validate_options(options: &AppOptions) -> Result<(), String> {
 
 /// Command to set app options
 #[tauri::command]
-fn set_options<R: Runtime>(app: AppHandle<R>, state: tauri::State<AppState>, options: AppOptions) -> Result<(), String> {
+fn set_options<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<AppState>,
+    options: AppOptions,
+) -> Result<(), String> {
     validate_options(&options)?;
 
     // Preserve identity fields — these are fork-controlled via .env, never user-settable
@@ -446,7 +467,9 @@ fn set_options<R: Runtime>(app: AppHandle<R>, state: tauri::State<AppState>, opt
     };
     *state.options.lock().unwrap() = new_options;
 
-    let store = app.store("options.json").map_err(|e| format!("Failed to open store: {}", e))?;
+    let store = app
+        .store("options.json")
+        .map_err(|e| format!("Failed to open store: {}", e))?;
     store.set("startsIn", options.starts_in);
     store.set("displayOffIn", options.display_off_in);
     store.set("requirePassIn", options.require_pass_in);
@@ -455,7 +478,9 @@ fn set_options<R: Runtime>(app: AppHandle<R>, state: tauri::State<AppState>, opt
     if options.custom_options.is_object() {
         store.set("customOptions", options.custom_options);
     }
-    store.save().map_err(|e| format!("Failed to save options: {}", e))?;
+    store
+        .save()
+        .map_err(|e| format!("Failed to save options: {}", e))?;
 
     Ok(())
 }
@@ -565,8 +590,9 @@ fn open_devtools(_window: tauri::Window) {
 pub fn run() {
     // Load environment variables from .env file (development only)
     init_env();
-    
+
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())

@@ -246,7 +246,10 @@ impl ScreensaverEngine {
     }
 
     /// Transition to display-off state. MUST be called on the main thread.
-    fn transition_to_display_off<R: tauri::Runtime>(&self, app: &AppHandle<R>) -> Result<(), String> {
+    fn transition_to_display_off<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+    ) -> Result<(), String> {
         if self.get_state() == ScreensaverState::ScreensaverActive {
             let _ = super::power_monitor::allow_display_sleep_direct();
             self.close_all_savers(app)?;
@@ -331,7 +334,10 @@ impl ScreensaverEngine {
             return Ok(());
         }
 
-        println!("Deactivating screensaver (main thread), state: {:?}", current_state);
+        println!(
+            "Deactivating screensaver (main thread), state: {:?}",
+            current_state
+        );
 
         if current_state == ScreensaverState::ScreensaverActive {
             match super::power_monitor::allow_display_sleep_direct() {

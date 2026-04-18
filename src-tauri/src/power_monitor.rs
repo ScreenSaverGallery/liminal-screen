@@ -239,7 +239,11 @@ fn get_idle_time_macos() -> Result<u64, String> {
         for line in output_str.lines() {
             if line.contains("HIDIdleTime") {
                 if let Some(time_str) = line.split('=').nth(1) {
-                    let time_str = time_str.trim().trim_end_matches(',').trim_matches('"').trim();
+                    let time_str = time_str
+                        .trim()
+                        .trim_end_matches(',')
+                        .trim_matches('"')
+                        .trim();
                     if let Ok(time_ns) = time_str.parse::<u64>() {
                         return Ok(time_ns / 1_000_000_000);
                     }
@@ -256,7 +260,11 @@ fn get_idle_time_macos() -> Result<u64, String> {
         for line in output_str.lines() {
             if line.contains("HIDIdleTime") || line.contains("\"IdleTime\"") {
                 if let Some(time_str) = line.split('=').nth(1) {
-                    let time_str = time_str.trim().trim_end_matches(',').trim_matches('"').trim();
+                    let time_str = time_str
+                        .trim()
+                        .trim_end_matches(',')
+                        .trim_matches('"')
+                        .trim();
                     if let Ok(time_ns) = time_str.parse::<u64>() {
                         return Ok(time_ns / 1_000_000_000);
                     }
@@ -335,7 +343,10 @@ fn allow_sleep_macos(state: &PowerSaveBlocker) -> Result<(), String> {
                 .args(&["-TERM", &pid.to_string()])
                 .spawn();
             *id = None;
-            println!("macOS: Display sleep allowed (terminated caffeinate pid {})", pid);
+            println!(
+                "macOS: Display sleep allowed (terminated caffeinate pid {})",
+                pid
+            );
         }
     }
     Ok(())
@@ -449,8 +460,7 @@ fn prevent_sleep_linux(state: &PowerSaveBlocker) -> Result<(), String> {
         return Ok(());
     }
 
-    let app_name = std::env::var("VITE_APP_NAME")
-        .unwrap_or_else(|_| "Liminal Screen".to_string());
+    let app_name = std::env::var("VITE_APP_NAME").unwrap_or_else(|_| "Liminal Screen".to_string());
 
     let result = Command::new("systemd-inhibit")
         .args(&[
@@ -469,7 +479,10 @@ fn prevent_sleep_linux(state: &PowerSaveBlocker) -> Result<(), String> {
             if let Ok(mut id) = state.assertion_id.lock() {
                 *id = Some(pid);
             }
-            println!("Linux: Display sleep prevented (systemd-inhibit pid {})", pid);
+            println!(
+                "Linux: Display sleep prevented (systemd-inhibit pid {})",
+                pid
+            );
         }
         Err(e) => println!("Linux: Warning: Could not prevent display sleep: {}", e),
     }
@@ -486,7 +499,10 @@ fn allow_sleep_linux(state: &PowerSaveBlocker) -> Result<(), String> {
                 .args(&["-TERM", &pid.to_string()])
                 .spawn();
             *id = None;
-            println!("Linux: Display sleep allowed (terminated systemd-inhibit pid {})", pid);
+            println!(
+                "Linux: Display sleep allowed (terminated systemd-inhibit pid {})",
+                pid
+            );
         }
     }
     Ok(())
@@ -587,7 +603,10 @@ fn prevent_sleep_macos_direct() -> Result<(), String> {
             println!("macOS: Display sleep prevented (caffeinate direct)");
             Ok(())
         }
-        Err(e) => Err(format!("Failed to prevent display sleep via caffeinate: {}", e)),
+        Err(e) => Err(format!(
+            "Failed to prevent display sleep via caffeinate: {}",
+            e
+        )),
     }
 }
 
@@ -618,7 +637,10 @@ fn lock_system_macos_direct() -> Result<(), String> {
         }
         Err(e) => {
             // Fallback: at least sleep the display
-            println!("CGSession failed ({}), falling back to pmset displaysleepnow", e);
+            println!(
+                "CGSession failed ({}), falling back to pmset displaysleepnow",
+                e
+            );
             Command::new("pmset")
                 .args(&["displaysleepnow"])
                 .spawn()
@@ -632,8 +654,7 @@ fn lock_system_macos_direct() -> Result<(), String> {
 fn prevent_sleep_linux_direct() -> Result<(), String> {
     use std::process::Command;
 
-    let app_name = std::env::var("VITE_APP_NAME")
-        .unwrap_or_else(|_| "Liminal Screen".to_string());
+    let app_name = std::env::var("VITE_APP_NAME").unwrap_or_else(|_| "Liminal Screen".to_string());
 
     let result = Command::new("systemd-inhibit")
         .args(&[
@@ -655,7 +676,10 @@ fn prevent_sleep_linux_direct() -> Result<(), String> {
             let _ = Command::new("xdg-screensaver")
                 .args(&["suspend", &std::process::id().to_string()])
                 .spawn();
-            println!("Linux: systemd-inhibit failed ({}), tried xdg-screensaver", e);
+            println!(
+                "Linux: systemd-inhibit failed ({}), tried xdg-screensaver",
+                e
+            );
             Ok(())
         }
     }

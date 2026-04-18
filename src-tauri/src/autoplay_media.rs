@@ -64,7 +64,10 @@ pub fn configure_autoplay_for_window<R: Runtime>(window: &tauri::webview::Webvie
         }
     }) {
         Ok(_) => {}
-        Err(e) => eprintln!("Failed to configure autoplay for window {}: {}", err_label, e),
+        Err(e) => eprintln!(
+            "Failed to configure autoplay for window {}: {}",
+            err_label, e
+        ),
     }
 }
 
@@ -199,12 +202,10 @@ pub fn stop_webview<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) {
     {
         let closure_label = label.clone();
         let err_label = label.clone();
-        match window.with_webview(move |webview| {
-            unsafe {
-                let wkwebview: cocoa::base::id = webview.inner() as *mut _ as cocoa::base::id;
-                let _: () = objc::msg_send![wkwebview, stopLoading];
-                println!("macOS: Called [WKWebView stopLoading] on {}", closure_label);
-            }
+        match window.with_webview(move |webview| unsafe {
+            let wkwebview: cocoa::base::id = webview.inner() as *mut _ as cocoa::base::id;
+            let _: () = objc::msg_send![wkwebview, stopLoading];
+            println!("macOS: Called [WKWebView stopLoading] on {}", closure_label);
         }) {
             Ok(_) => {}
             Err(e) => eprintln!("Failed to stop webview {}: {}", err_label, e),
@@ -215,13 +216,11 @@ pub fn stop_webview<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) {
     {
         let closure_label = label.clone();
         let err_label = label.clone();
-        match window.with_webview(move |webview| {
-            unsafe {
-                if let Some(controller) = webview.controller() {
-                    if let Ok(core_webview) = controller.CoreWebView2() {
-                        let _ = core_webview.Stop();
-                        println!("Windows: Called CoreWebView2.Stop() on {}", closure_label);
-                    }
+        match window.with_webview(move |webview| unsafe {
+            if let Some(controller) = webview.controller() {
+                if let Ok(core_webview) = controller.CoreWebView2() {
+                    let _ = core_webview.Stop();
+                    println!("Windows: Called CoreWebView2.Stop() on {}", closure_label);
                 }
             }
         }) {
@@ -234,13 +233,11 @@ pub fn stop_webview<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) {
     {
         let closure_label = label.clone();
         let err_label = label.clone();
-        match window.with_webview(move |webview| {
-            unsafe {
-                let wkwebview = webview.inner() as *mut gtk::Widget;
-                let webview_ptr = &*(wkwebview as *mut webkit2gtk::WebView);
-                webkit2gtk::WebViewExt::load_blank(webview_ptr);
-                println!("Linux: Loaded blank in {}", closure_label);
-            }
+        match window.with_webview(move |webview| unsafe {
+            let wkwebview = webview.inner() as *mut gtk::Widget;
+            let webview_ptr = &*(wkwebview as *mut webkit2gtk::WebView);
+            webkit2gtk::WebViewExt::load_blank(webview_ptr);
+            println!("Linux: Loaded blank in {}", closure_label);
         }) {
             Ok(_) => {}
             Err(e) => eprintln!("Failed to stop webview {}: {}", err_label, e),
