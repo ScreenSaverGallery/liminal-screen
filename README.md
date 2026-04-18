@@ -227,4 +227,4 @@ Licensed under the [Apache License 2.0](LICENSE).
 
 Built with [Tauri v2](https://tauri.app/)
 
-Original project by [tomaszatoo]([https://](https://github.com/tomaszatoo))
+Original project by [tomaszatoo](https://github.com/tomaszatoo)
