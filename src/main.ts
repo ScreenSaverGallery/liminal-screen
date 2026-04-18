@@ -173,11 +173,13 @@ function setupUIButtonHandlers(): void {
       });
     }
   });
-  document
-    .getElementById("support-project")
-    ?.addEventListener("click", async () => {
-      openExternalLink("https://screensaver.gallery/donate");
+
+  document.querySelectorAll(".external-link").forEach((el: Element) => {
+    el?.addEventListener("click", () => {
+      const link = el.getAttribute("data");
+      if (link) openExternalLink(link);
     });
+  });
 }
 
 async function saveOptions(silent = false): Promise<void> {
