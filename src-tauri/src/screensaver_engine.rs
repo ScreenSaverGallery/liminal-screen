@@ -361,10 +361,10 @@ impl ScreensaverEngine {
         }
 
         let url = self.get_saver_url(app)?;
-        let instance_id = {
+        let (instance_id, app_name) = {
             let state = app.state::<super::AppState>();
             let guard = state.options.lock().unwrap();
-            guard.instance_id.clone()
+            (guard.instance_id.clone(), guard.app_name.clone())
         };
 
         println!(
@@ -388,7 +388,7 @@ impl ScreensaverEngine {
         .skip_taskbar(true)
         .visible(false)
         .focused(true)
-        .initialization_script(&super::instance_id_init_script(&instance_id));
+        .initialization_script(&super::build_init_script(&instance_id, &app_name));
 
         let scale = monitor.scale_factor;
         let logical_x = monitor.position.x as f64 / scale;

@@ -284,12 +284,18 @@ fn open_options_or_fallback<R: Runtime>(app: &AppHandle<R>) -> Result<(), String
     }
 }
 
-/// Build the initialization script that sets navigator.id to the instance UUID.
-/// Runs at document-start in every remote window before any page script executes.
-fn instance_id_init_script(instance_id: &str) -> String {
+/// Build the initialization script injected at document-start into every remote window.
+/// Sets navigator.id to the instance UUID and appends the app identifier to navigator.userAgent.
+/// Single quotes in app_name are escaped so the JS string literal is valid.
+fn build_init_script(instance_id: &str, app_name: &str) -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    let safe_name = app_name.replace('\\', "\\\\").replace('\'', "\\'");
     format!(
-        "(function(){{try{{Object.defineProperty(navigator,'id',{{value:'{}',writable:false,configurable:false}});}}catch(e){{}}}})()",
-        instance_id
+        "(function(){{\
+            try{{Object.defineProperty(navigator,'id',{{value:'{}',writable:false,configurable:false}});}}catch(e){{}}\
+            try{{Object.defineProperty(navigator,'userAgent',{{value:navigator.userAgent+' {} LiminalScreen/{}',writable:false,configurable:false}});}}catch(e){{}}\
+        }})()",
+        instance_id, safe_name, version
     )
 }
 
@@ -328,7 +334,7 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
         .resizable(true)
         .decorations(true)
         .visible(true)
-        .initialization_script(&instance_id_init_script(&instance_id))
+        .initialization_script(&build_init_script(&instance_id, &app_name))
         .build()
         .map_err(|e| format!("Failed to create options window: {}", e))?;
 
@@ -368,10 +374,10 @@ fn create_preview_window<R: Runtime>(app: AppHandle<R>, url: String, label: Stri
     if app.get_webview_window(&label).is_some() {
         return Ok(());
     }
-    let instance_id = {
+    let (instance_id, app_name) = {
         let state = app.state::<AppState>();
         let guard = state.options.lock().unwrap();
-        guard.instance_id.clone()
+        (guard.instance_id.clone(), guard.app_name.clone())
     };
     let parsed_url: url::Url = url
         .parse()
@@ -384,7 +390,7 @@ fn create_preview_window<R: Runtime>(app: AppHandle<R>, url: String, label: Stri
         .visible(true)
         .always_on_top(false)
         .skip_taskbar(false)
-        .initialization_script(&instance_id_init_script(&instance_id))
+        .initialization_script(&build_init_script(&instance_id, &app_name))
         .build()
         .map_err(|e| format!("Failed to create preview window: {}", e))?;
     Ok(())
