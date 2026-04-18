@@ -1,6 +1,8 @@
 {
   "name": "liminal-screen",
   "private": true,
+  "license": "Apache-2.0",
+  "author": "tomaszatoo",
   "version": "0.1.0",
   "type": "module",
   "scripts": {

@@ -25,3 +25,7 @@ dist-ssr
 
 # Custom
 .env
+
+# Agents
+.claude
+.hermes

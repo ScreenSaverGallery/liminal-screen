@@ -210,10 +210,10 @@ On macOS, autoplay must be configured BEFORE any content loads. The app creates 
 
 ## License
 
-[Your License Here]
+Licensed under the [Apache License 2.0](LICENSE).
 
 ## Credits
 
 Built with [Tauri v2](https://tauri.app/)
 
-Original project by [Your Name/Organization]
+Original project by [tomaszatoo]([https://](https://github.com/tomaszatoo))

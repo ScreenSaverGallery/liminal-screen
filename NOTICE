@@ -1,0 +1,17 @@
+Liminal Screen
+Copyright 2024-2025 tomaszatoo
+
+This product includes software developed by tomaszatoo
+(https://github.com/tomaszatoo)
+
+Liminal Screen is built with the following open-source projects:
+
+- Tauri v2 (Apache-2.0 / MIT) - https://tauri.app/
+- Rust (Apache-2.0 / MIT) - https://www.rust-lang.org/
+- Vite (MIT) - https://vitejs.dev/
+- TypeScript (Apache-2.0) - https://www.typescriptlang.org/
+
+This product includes code from the Liminal Screen project.
+If you have forked or derived works from this project, please
+retain this NOTICE file and the attribution credits above as
+required by the Apache License, Version 2.0.
