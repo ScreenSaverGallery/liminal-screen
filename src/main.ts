@@ -18,10 +18,15 @@ const options = new Signal<AppOptions | null>(null);
 interface ScreensaverStatus {
   active: boolean;
   idleSeconds: number;
+  previewActive: boolean;
 }
-const status = new Signal<ScreensaverStatus>({ active: false, idleSeconds: 0 });
+const status = new Signal<ScreensaverStatus>({
+  active: false,
+  idleSeconds: 0,
+  previewActive: false,
+});
 
-const isActive = status.derive((s) => s.active);
+const isActive = status.derive((s) => s.active || s.previewActive);
 const idleSignal = status.derive((s) => s.idleSeconds);
 
 let previewWindow: Preview | null = null;
@@ -129,8 +134,7 @@ function setIdentity(opts: AppOptions): void {
   if (descEl) descEl.textContent = opts.appDescription;
   if (titleEl) titleEl.textContent = `${opts.appName} - Options`;
   if (aboutEl)
-    aboutEl.textContent =
-      `${opts.appName} runs in your system tray and activates after a period of inactivity. ${opts.appDescription}`;
+    aboutEl.textContent = `${opts.appName} runs in your system tray and activates after a period of inactivity. ${opts.appDescription}`;
 }
 
 // ── Form ───────────────────────────────────────────────────────────────────
@@ -276,12 +280,16 @@ async function previewScreensaver(): Promise<void> {
     const opts = options.get();
     const url = opts?.debug
       ? import.meta.env.VITE_SAVER_URL_DEBUG ||
-        "https://save.screensaver.gallery/debug"
-      : import.meta.env.VITE_SAVER_URL || "https://save.screensaver.gallery";
+        "https://saver.example.com/debug"
+      : import.meta.env.VITE_SAVER_URL || "https://saver.example.com";
     previewWindow = new Preview(url);
-    await previewWindow.show();
+    await previewWindow.show(() => {
+      status.update((s) => ({ ...s, previewActive: false }));
+    });
+    status.update((s) => ({ ...s, previewActive: true }));
   } catch (error) {
     console.error("Failed to create preview window:", error);
+    status.update((s) => ({ ...s, previewActive: false }));
   }
 }
 
