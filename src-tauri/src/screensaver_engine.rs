@@ -474,11 +474,41 @@ impl ScreensaverEngine {
         let state = app.state::<super::AppState>();
         let options = state.options.lock().unwrap();
 
-        if options.debug {
-            Ok(options.saver_url_debug.clone())
+        let base_url = if options.debug {
+            options.saver_url_debug.clone()
         } else {
-            Ok(options.saver_url.clone())
+            options.saver_url.clone()
+        };
+
+        if !options.custom_options.is_object() {
+            return Ok(base_url);
         }
+
+        let custom = options.custom_options.clone();
+        drop(options);
+
+        let mut url: url::Url = base_url
+            .parse()
+            .map_err(|e| format!("Invalid saver URL: {}", e))?;
+
+        if let serde_json::Value::Object(map) = custom {
+            if !map.is_empty() {
+                let mut params = url.query_pairs_mut();
+                for (key, value) in &map {
+                    let str_val = match value {
+                        serde_json::Value::String(s) => Some(s.clone()),
+                        serde_json::Value::Number(n) => Some(n.to_string()),
+                        serde_json::Value::Bool(b) => Some(b.to_string()),
+                        _ => None, // skip nested objects/arrays/null
+                    };
+                    if let Some(val) = str_val {
+                        params.append_pair(key, &val);
+                    }
+                }
+            }
+        }
+
+        Ok(url.to_string())
     }
 
     pub fn get_status(&self) -> ScreensaverStatus {

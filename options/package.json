@@ -1,0 +1,17 @@
+{
+  "name": "liminal-screen-options-example",
+  "version": "0.1.0",
+  "description": "Reference options page for Liminal Screen forks. Copy, customise, and host it.",
+  "type": "module",
+  "scripts": {
+    "build": "bun build main.ts --outfile=main.js --format=esm --target=browser",
+    "dev": "bun build main.ts --outfile=main.js --format=esm --target=browser --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@liminal-screen/api": "^0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

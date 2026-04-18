@@ -1,5 +1,5 @@
 // Storage Module - Persistent configuration storage using Tauri Store plugin
-// Handles both mandatory options and remote form parameters
+// Handles both mandatory options and custom (fork-defined) options
 
 import { load } from "@tauri-apps/plugin-store";
 
@@ -20,18 +20,25 @@ export interface MandatoryOptions {
 }
 
 /**
- * Remote options interface - Form data from Options window
+ * Custom options interface - Fork-defined form data from the options page.
+ * Only primitives are allowed; values are appended to the saver URL as query params.
  */
-export interface RemoteOptions {
-  [key: string]: unknown;
+export interface CustomOptions {
+  [key: string]: string | number | boolean;
 }
 
 /**
- * Complete application options
+ * Complete application options — mirrors the Rust AppOptions struct (camelCase).
+ * Read-only fields (saverUrl, optionsUrl, appName, appDescription) are set by .env;
+ * they are never user-settable and are not persisted.
  */
 export interface AppOptions extends MandatoryOptions {
-  /** Remote form parameters */
-  remoteOptions?: RemoteOptions;
+  saverUrl: string;
+  saverUrlDebug: string;
+  optionsUrl: string;
+  appName: string;
+  appDescription: string;
+  customOptions: CustomOptions;
 }
 
 // Default values for mandatory options
@@ -55,7 +62,7 @@ const KEYS = {
   REQUIRE_PASS_IN: "requirePassIn",
   RUN_ON_BATTERY: "runOnBattery",
   DEBUG: "debug",
-  REMOTE_OPTIONS: "remoteOptions",
+  CUSTOM_OPTIONS: "customOptions",
 };
 
 /**
@@ -155,34 +162,34 @@ export class Storage {
   }
 
   /**
-   * Get remote options (form data from Options window)
+   * Get custom options (fork-defined form data from the options page)
    */
-  static async getRemoteOptions(): Promise<RemoteOptions> {
+  static async getCustomOptions(): Promise<CustomOptions> {
     if (!this.store) throw new Error("Storage not initialized");
 
-    return (await this.store.get<RemoteOptions>(KEYS.REMOTE_OPTIONS)) ?? {};
+    return (await this.store.get<CustomOptions>(KEYS.CUSTOM_OPTIONS)) ?? {};
   }
 
   /**
-   * Set remote options (form data from Options window)
+   * Set custom options (fork-defined form data from the options page)
    */
-  static async setRemoteOptions(options: RemoteOptions): Promise<void> {
+  static async setCustomOptions(options: CustomOptions): Promise<void> {
     if (!this.store) throw new Error("Storage not initialized");
 
-    await this.store.set(KEYS.REMOTE_OPTIONS, options);
+    await this.store.set(KEYS.CUSTOM_OPTIONS, options);
     await this.save();
   }
 
   /**
-   * Get all options (mandatory + remote)
+   * Get all options (mandatory + custom)
    */
-  static async getOptions(): Promise<AppOptions> {
+  static async getOptions(): Promise<Omit<AppOptions, "saverUrl" | "saverUrlDebug" | "optionsUrl" | "appName" | "appDescription">> {
     const mandatory = await this.getMandatoryOptions();
-    const remote = await this.getRemoteOptions();
+    const custom = await this.getCustomOptions();
 
     return {
       ...mandatory,
-      remoteOptions: remote,
+      customOptions: custom,
     };
   }
 

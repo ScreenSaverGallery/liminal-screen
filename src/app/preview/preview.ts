@@ -15,34 +15,15 @@ export interface PreviewOptions {
 }
 
 /**
- * Default preview options
- */
-const DefaultOptions: PreviewOptions = {
-  debug: false,
-};
-
-/**
  * Preview Class - Manages screensaver preview windows
  */
 export class Preview {
   private webviewWindow: WebviewWindow | null = null;
   private readonly label: string;
   private readonly url: string;
-  private readonly options: PreviewOptions;
-
-  /**
-   * Create a new Preview instance
-   * @param url - URL to display in the preview
-   * @param label - Unique window identifier
-   * @param options - Configuration options (unused but kept for API compatibility)
-   */
-  constructor(
-    url: string,
-    label?: string,
-  ) {
+  constructor(url: string, label?: string) {
     this.url = url;
     this.label = label || `preview-${Date.now()}`;
-    this.options = DefaultOptions; // Use default options always
   }
 
   /**

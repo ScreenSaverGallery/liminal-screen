@@ -69,9 +69,14 @@ fn load_persisted_options<R: Runtime>(app: &tauri::App<R>) -> Result<AppOptions,
         }
     }
     
-    // Note: saver_url, saver_url_debug, options_url are NOT persisted - they come from .env
-    // This allows forks to change URLs without affecting user preferences
-    
+    // Load custom options (JSON blob)
+    if let Some(custom) = store.get("customOptions") {
+        if custom.is_object() {
+            options.custom_options = custom;
+        }
+    }
+
+    // URLs, app_name, app_description are never persisted — always from .env
     Ok(options)
 }
 
@@ -83,26 +88,35 @@ pub struct AppState {
 
 /// Application options
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppOptions {
+    // Fork identity — env only, never persisted
     pub saver_url: String,
     pub saver_url_debug: String,
     pub options_url: String,
+    pub app_name: String,
+    pub app_description: String,
+    // Mandatory timing — persisted individually
     pub starts_in: f64,       // Minutes
     pub display_off_in: f64,  // Minutes
     pub require_pass_in: f64, // Minutes
     pub run_on_battery: bool,
     pub debug: bool,
+    // Custom (fork-defined) — persisted as JSON blob, appended to saver URL as query params
+    pub custom_options: serde_json::Value,
 }
 
 impl Default for AppOptions {
     fn default() -> Self {
         Self {
-            // Read from environment variables with fallbacks for forkability
             saver_url: std::env::var("VITE_SAVER_URL")
                 .unwrap_or_else(|_| "about:blank".to_string()),
             saver_url_debug: std::env::var("VITE_SAVER_URL_DEBUG")
                 .unwrap_or_else(|_| "about:blank".to_string()),
-            options_url: std::env::var("VITE_OPTIONS_URL").unwrap_or_else(|_| "".to_string()),
+            options_url: std::env::var("VITE_OPTIONS_URL").unwrap_or_default(),
+            app_name: std::env::var("VITE_APP_NAME")
+                .unwrap_or_else(|_| "Liminal Screen".to_string()),
+            app_description: std::env::var("VITE_APP_DESCRIPTION").unwrap_or_default(),
             starts_in: std::env::var("VITE_DEFAULT_STARTS_IN")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -121,6 +135,7 @@ impl Default for AppOptions {
             debug: std::env::var("VITE_DEFAULT_DEBUG")
                 .map(|s| s == "true")
                 .unwrap_or(false),
+            custom_options: serde_json::Value::Object(serde_json::Map::new()),
         }
     }
 }
@@ -258,14 +273,26 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
         return Ok(());
     }
 
-    // Parse the URL first to catch parsing errors
-    let url = options_url
+    // Get app identity from state
+    let (app_name, app_description) = {
+        let state = app.state::<AppState>();
+        let options = state.options.lock().unwrap();
+        (options.app_name.clone(), options.app_description.clone())
+    };
+
+    // Parse URL and append app identity as query params
+    let mut url: url::Url = options_url
         .parse()
         .map_err(|e| format!("Failed to parse options URL '{}': {}", options_url, e))?;
+    {
+        let mut params = url.query_pairs_mut();
+        params.append_pair("appName", &app_name);
+        if !app_description.is_empty() {
+            params.append_pair("appDescription", &app_description);
+        }
+    }
 
-    // Create options window
-    let title = std::env::var("VITE_APP_NAME").unwrap_or_else(|_| "Liminal Screen".to_string());
-    let options_title = format!("{} Options", title);
+    let options_title = format!("{} Options", app_name);
     let window = WebviewWindowBuilder::new(app, OPTIONS_LABEL, WebviewUrl::External(url))
         .title(&options_title)
         .inner_size(900.0, 600.0)
@@ -275,7 +302,6 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
         .build()
         .map_err(|e| format!("Failed to create options window: {}", e))?;
 
-    // Store window reference
     let _ = window.show();
 
     Ok(())
@@ -320,16 +346,33 @@ fn factory_reset_options<R: Runtime>(app: AppHandle<R>, state: tauri::State<AppS
     Ok(default_options)
 }
 
+fn validate_options(options: &AppOptions) -> Result<(), String> {
+    if options.starts_in < 0.1 || options.starts_in > 1440.0 {
+        return Err("startsIn must be between 0.1 and 1440 minutes".into());
+    }
+    if options.display_off_in < 0.5 || options.display_off_in > 1440.0 {
+        return Err("displayOffIn must be between 0.5 and 1440 minutes".into());
+    }
+    if options.require_pass_in < 0.0 || options.require_pass_in > 1440.0 {
+        return Err("requirePassIn must be between 0 and 1440 minutes".into());
+    }
+    Ok(())
+}
+
 /// Command to set app options
 #[tauri::command]
 fn set_options<R: Runtime>(app: AppHandle<R>, state: tauri::State<AppState>, options: AppOptions) -> Result<(), String> {
-    // Preserve URLs — these are fork-controlled via .env, not user-configurable
+    validate_options(&options)?;
+
+    // Preserve identity fields — these are fork-controlled via .env, never user-settable
     let new_options = {
         let current = state.options.lock().unwrap();
         AppOptions {
             saver_url: current.saver_url.clone(),
             saver_url_debug: current.saver_url_debug.clone(),
             options_url: current.options_url.clone(),
+            app_name: current.app_name.clone(),
+            app_description: current.app_description.clone(),
             ..options.clone()
         }
     };
@@ -341,6 +384,9 @@ fn set_options<R: Runtime>(app: AppHandle<R>, state: tauri::State<AppState>, opt
     store.set("requirePassIn", options.require_pass_in);
     store.set("runOnBattery", options.run_on_battery);
     store.set("debug", options.debug);
+    if options.custom_options.is_object() {
+        store.set("customOptions", options.custom_options);
+    }
     store.save().map_err(|e| format!("Failed to save options: {}", e))?;
 
     Ok(())

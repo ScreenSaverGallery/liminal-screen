@@ -3,7 +3,7 @@
 
 import { emit, listen, Event } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Storage, RemoteOptions } from "../storage/storage";
+import { Storage, CustomOptions } from "../storage/storage";
 
 /**
  * Options window manager class
@@ -19,7 +19,7 @@ export class OptionsManager {
     if (this.isInitialized) return;
 
     // Listen for save-options event from Options window
-    await listen<RemoteOptions>("save-options", async (event: Event<RemoteOptions>) => {
+    await listen<CustomOptions>("save-options", async (event: Event<CustomOptions>) => {
       await this.handleSaveOptions(event.payload);
     });
 
@@ -41,10 +41,10 @@ export class OptionsManager {
    * Handle save-options event
    * Stores form data from Options window
    */
-  private static async handleSaveOptions(formData: RemoteOptions): Promise<void> {
+  private static async handleSaveOptions(formData: CustomOptions): Promise<void> {
     try {
       // Store in persistent storage
-      await Storage.setRemoteOptions(formData);
+      await Storage.setCustomOptions(formData);
 
       // Emit options-updated event to notify all windows
       await emit("options-updated", formData);
@@ -109,11 +109,11 @@ export class OptionsManager {
       ? import.meta.env.VITE_SAVER_URL_DEBUG || "https://example.com/debug"
       : import.meta.env.VITE_SAVER_URL || "https://example.com/screensaver";
 
-    const remoteOptions = await Storage.getRemoteOptions();
+    const customOptions = await Storage.getCustomOptions();
 
-    // Build query string from remote options
+    // Build query string from custom options
     const params = new URLSearchParams();
-    for (const [key, value] of Object.entries(remoteOptions)) {
+    for (const [key, value] of Object.entries(customOptions)) {
       if (value !== undefined && value !== null) {
         params.append(key, String(value));
       }

@@ -21,6 +21,7 @@ url = "2"
 tauri-plugin-store = "2"
 tokio = "1.52.0"
 dotenv = "0.15"
+urlencoding = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = [
