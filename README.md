@@ -127,7 +127,7 @@ User preferences (timing values like `startsIn`, `displayOffIn`, etc.) are saved
 2. **`.env` defaults** (used on first install or after factory reset)
 3. **Hardcoded fallbacks** (if `.env` values aren't set)
 
-**What's persisted:** Timing values (`startsIn`, `displayOffIn`, `requirePassIn`), `runOnBattery`, `debug`
+**What's persisted:** Timing values (`startsIn`, `displayOffIn`, `requirePassIn`), `runOnBattery`, `debug`, `instanceId`
 
 **What's NOT persisted:** URLs (`saver_url`, `saver_url_debug`, `options_url`) — these always come from `.env` so forks can update URLs without affecting user preferences.
 
@@ -135,16 +135,11 @@ User preferences (timing values like `startsIn`, `displayOffIn`, etc.) are saved
 
 Users can reset to `.env` defaults via the UI (Reset button) or by deleting `options.json` from the app's data directory.
 
-Factory reset does three things:
-1. Clears `options.json` (Tauri store)
+Factory reset does two things:
+1. Clears `options.json` (Tauri store) and regenerates `instanceId`
 2. Resets in-memory state to `.env` defaults
-3. Injects cleanup JavaScript into any currently-open remote windows (options window, screensaver windows) to clear `localStorage`, `sessionStorage`, Cache API entries, and unregister service workers
 
-**Limitations of browser storage cleanup:**
-
-- **Closed windows are not cleaned.** Screensaver windows are typically closed when factory reset is triggered (screensaver inactive). Their remote-origin `localStorage`/Cache data persists in the WebView data store on disk until those windows open again.
-- **Only the active saver URL domain is cleaned.** All screensaver windows at any given time load either `VITE_SAVER_URL` or `VITE_SAVER_URL_DEBUG` (based on the `debug` flag) — never both simultaneously. If those two URLs are on **different domains**, only the currently-active domain's storage is cleaned. The other domain's storage is unaffected.
-- **Main window is intentionally excluded.** It loads a local Tauri asset (`tauri://localhost`) and uses no browser storage APIs.
+**Browser storage:** Remote pages (screensaver, options) may have written data to `localStorage`, the Cache API, or registered service workers. These are not cleared from the native side. Instead, every remote window has `navigator.id` injected at document-start (set to the current `instanceId`). A page that stores the last-seen ID can detect a mismatch on load and self-clean — the changed `navigator.id` after reset is the signal. See `.hermes/plans/native-storage-cleanup/RETHINK.md` for the concept and implementation notes.
 
 # Development mode
 `bun run tauri dev`
@@ -162,7 +157,7 @@ Minimal, reactive UI — no framework. Uses a lightweight `Signal` class for sta
 - `app/reactive.ts` — Generic `Signal<T>` class with `.derive()` and `.effect()` for reactive data flow
 - `app/types.ts` — `AppOptions` TypeScript type mirroring the Rust struct
 - `app/preview/preview.ts` — Preview window creation and management
-- `app/power-monitor/power-monitory.ts` — Bridge to Rust idle-time detection
+- `app/power-monitor/power-monitor.ts` — Bridge to Rust idle-time detection
 - `styles.css` — Application styles
 
 ### Backend (`src-tauri/src/`)
@@ -170,7 +165,7 @@ Minimal, reactive UI — no framework. Uses a lightweight `Signal` class for sta
 The Rust backend is the engine — it handles all screensaver lifecycle, window management, power monitoring, and persistence.
 
 - `main.rs` — App entry, Tauri plugin registration (store, dialog, opener)
-- `lib.rs` — Core setup: window creation, system tray with dynamic tooltip (from `VITE_APP_NAME`), options CRUD, screensaver engine orchestration, `factory_reset_options` command
+- `lib.rs` — Core setup: window creation, system tray with dynamic tooltip (from `VITE_APP_NAME`), options CRUD, screensaver engine orchestration, `factory_reset_options` command, `build_init_script` (injects `navigator.id` and `navigator.userAgent` suffix into all remote windows at document-start)
 - `screensaver_engine.rs` — Screensaver state machine: monitors idle time, creates/destroys fullscreen windows on activation/deactivation, manages multi-display layout
 - `display_manager.rs` — Monitor detection and logical coordinate calculation for multi-monitor fullscreen positioning
 - `power_monitor.rs` — Platform-specific idle time detection (macOS IOKit, Windows `GetLastInputInfo`, Linux systemd-inhibit + X11 screensaver queries)
