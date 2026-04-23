@@ -1,6 +1,4 @@
 // src-tauri/src/autoplay_plugin.rs
-#![allow(unexpected_cfgs)]
-
 use tauri::{
     plugin::{Builder, TauriPlugin},
     Runtime, Webview,
@@ -10,9 +8,9 @@ use tauri::{
 use windows::Win32::System::WinRT::IInspectable;
 
 #[cfg(target_os = "macos")]
-use cocoa::base::id;
+use objc2::msg_send;
 #[cfg(target_os = "macos")]
-use objc::{msg_send, sel, sel_impl};
+use objc2::runtime::AnyObject;
 
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("autoplay")
@@ -35,11 +33,11 @@ pub fn configure_autoplay_for_window<R: Runtime>(window: &tauri::webview::Webvie
     match window.with_webview(move |webview| {
         #[cfg(target_os = "macos")]
         unsafe {
-            let wkwebview: id = webview.inner() as *mut _ as id;
-            let config: id = msg_send![wkwebview, configuration];
-            let _: () = msg_send![config, setMediaTypesRequiringUserActionForPlayback: 0];
-            let preferences: id = msg_send![config, preferences];
-            let _: () = msg_send![preferences, setJavaScriptCanOpenWindowsAutomatically: true];
+            let wkwebview = &*(webview.inner() as *mut AnyObject);
+            let config: *mut AnyObject = msg_send![wkwebview, configuration];
+            let _: () = msg_send![&*config, setMediaTypesRequiringUserActionForPlayback: 0_usize];
+            let preferences: *mut AnyObject = msg_send![&*config, preferences];
+            let _: () = msg_send![&*preferences, setJavaScriptCanOpenWindowsAutomatically: true];
             println!("macOS autoplay configured for window {}", closure_label);
         }
 
@@ -108,18 +106,18 @@ fn configure_autoplay<R: Runtime>(window: Webview<R>) {
             #[allow(unused_unsafe)]
             unsafe {
                 // Get the WKWebView
-                let wkwebview: id = webview.inner() as *mut _ as id;
+                let wkwebview = &*(webview.inner() as *mut AnyObject);
 
                 // Get the configuration
-                let config: id = msg_send![wkwebview, configuration];
+                let config: *mut AnyObject = msg_send![wkwebview, configuration];
 
                 // Set mediaTypesRequiringUserActionForPlayback to WKAudiovisualMediaTypeNone (0)
                 // This allows autoplay for both audio and video without user interaction
-                let _: () = msg_send![config, setMediaTypesRequiringUserActionForPlayback: 0];
+                let _: () = msg_send![&*config, setMediaTypesRequiringUserActionForPlayback: 0_usize];
 
                 // Also disable other restrictions
-                let preferences: id = msg_send![config, preferences];
-                let _: () = msg_send![preferences, setJavaScriptCanOpenWindowsAutomatically: true];
+                let preferences: *mut AnyObject = msg_send![&*config, preferences];
+                let _: () = msg_send![&*preferences, setJavaScriptCanOpenWindowsAutomatically: true];
 
                 println!("macOS autoplay configuration applied");
             }
@@ -203,8 +201,8 @@ pub fn stop_webview<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) {
         let closure_label = label.clone();
         let err_label = label.clone();
         match window.with_webview(move |webview| unsafe {
-            let wkwebview: cocoa::base::id = webview.inner() as *mut _ as cocoa::base::id;
-            let _: () = objc::msg_send![wkwebview, stopLoading];
+            let wkwebview = &*(webview.inner() as *mut AnyObject);
+            let _: () = msg_send![wkwebview, stopLoading];
             println!("macOS: Called [WKWebView stopLoading] on {}", closure_label);
         }) {
             Ok(_) => {}
