@@ -626,28 +626,59 @@ fn allow_sleep_macos_direct() -> Result<(), String> {
 fn lock_system_macos_direct() -> Result<(), String> {
     use std::process::Command;
 
-    // CGSession -suspend triggers the macOS lock screen
-    let cgsession =
-        "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession";
+    // Modern macOS (10.15+) no longer ships CGSession at the legacy path.
+    // Reliable lock methods, in order of preference:
+    // 1. AppleScript keystroke — triggers the lock screen shortcut (Ctrl+Cmd+Q)
+    // 2. Open ScreenSaverEngine — launches the screen saver directly
+    // 3. pmset displaysleepnow — sleep display, lock only if user has
+    //    "Require password after sleep or screensaver" enabled
 
-    match Command::new(cgsession).arg("-suspend").spawn() {
-        Ok(_) => {
-            println!("macOS: System locked via CGSession");
-            Ok(())
+    // Method 1: AppleScript lock shortcut
+    // NOTE: This requires the app to have Accessibility permissions granted
+    // in System Preferences → Security & Privacy → Privacy → Accessibility.
+    // Without this permission, osascript exits with a non-zero status and we
+    // fall through to Method 2. Apple does not provide a programmatic lock API
+    // that works without accessibility entitlements in user-space.
+    // Issue: https://github.com/tomaszatoo/liminal-screen/issues/TODO-lock-permissions
+    let applescript = "tell application \"System Events\" to keystroke \"q\" using {command down, control down}";
+    match Command::new("osascript")
+        .args(&["-e", applescript])
+        .status()
+    {
+        Ok(status) if status.success() => {
+            println!("macOS: System locked via AppleScript");
+            return Ok(());
+        }
+        Ok(status) => {
+            println!("AppleScript lock exited with code: {:?}", status.code());
         }
         Err(e) => {
-            // Fallback: at least sleep the display
-            println!(
-                "CGSession failed ({}), falling back to pmset displaysleepnow",
-                e
-            );
-            Command::new("pmset")
-                .args(&["displaysleepnow"])
-                .spawn()
-                .map_err(|e2| format!("Lock failed — CGSession: {} / pmset: {}", e, e2))?;
-            Ok(())
+            println!("AppleScript lock failed to run: {}", e);
         }
     }
+
+    // Method 2: Launch ScreenSaverEngine
+    match Command::new("open").args(&["-a", "ScreenSaverEngine"]).status() {
+        Ok(status) if status.success() => {
+            println!("macOS: ScreenSaverEngine launched (locks if passwd required)");
+            return Ok(());
+        }
+        Ok(status) => {
+            println!("ScreenSaverEngine exited with code: {:?}", status.code());
+        }
+        Err(e) => {
+            println!("ScreenSaverEngine launch failed: {}", e);
+        }
+    }
+
+    // Method 3: Fallback to display sleep
+    println!("Falling back to pmset displaysleepnow — this only locks if 'Require password after sleep or screensaver' is enabled in System Preferences");
+    Command::new("pmset")
+        .args(&["displaysleepnow"])
+        .status()
+        .map_err(|e| format!("Lock failed — all methods exhausted. pmset: {}", e))?;
+
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
