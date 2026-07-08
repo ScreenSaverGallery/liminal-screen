@@ -1,3 +1,6 @@
+- [ ] liminal screen icon
+- [ ] win + linux
+- [ ] security check, see: .hermes/plans/security/PLAN.md
 - [ ] e2e tests, see: .hermes/plans/testing/PLAN.md Part B (unit tests done)
 - [x] unit tests (Rust: `cargo test` in src-tauri; TS: `bun run test` — see .hermes/plans/testing/)
 - [x] autoupdate implementation (liminal-api, options/main window, tray menu), see: .hermes/plans/autoupdate/ (keys are in /${home}/.tauri/)
