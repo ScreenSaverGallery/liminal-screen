@@ -20,32 +20,28 @@ serde_json = "1"
 url = "2"
 tauri-plugin-store = "2"
 tauri-plugin-dialog = "2"
-tokio = "1.52.0"
+tauri-plugin-updater = "2"
+tauri-plugin-notification = "2"
+tokio = "1"
 dotenv = "0.15"
 uuid = { version = "1", features = ["v4"] }
-urlencoding = "2"
+ureq = { version = "2", features = ["json"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = [
-    "Win32_System_WinRT",
-    "Win32_System_Power",
-    "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_System_SystemServices",
-    "Win32_Graphics_Gdi",
     "Win32_Foundation",
+    "Win32_System_Power",
+    "Win32_System_SystemInformation",
+    "Win32_System_Shutdown",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 core-foundation = "0.10"
-core-graphics = "0.25"
-io-kit-sys = "0.5"
-mach2 = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-webkit2gtk = "2.0"
-gtk = "0.18"
-glib = "0.22"
-
-[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-updater = "2"
+# Must match the webkit2gtk major/features used by tauri itself so the
+# WebView type returned by PlatformWebview::inner() unifies.
+webkit2gtk = { version = "2", features = ["v2_40"] }

@@ -20,8 +20,9 @@ export type {
   MandatoryOptions,
   CustomOptions,
   SetOptionsPayload,
+  UpdateInfo,
 } from './types';
-import type { AppOptions, SetOptionsPayload } from './types';
+import type { AppOptions, SetOptionsPayload, UpdateInfo } from './types';
 
 export { Signal } from './reactive';
 export { createOptionsStore } from './store';
@@ -72,6 +73,9 @@ const MOCK_OPTIONS: AppOptions = {
   runOnBattery: false,
   debug: false,
   customOptions: {},
+  notificationUrl: '',
+  notificationCheckIntervalSecs: 3600,
+  notificationsEnabled: false,
 };
 
 // ── LiminalAPI ──────────────────────────────────────────────────────────────
@@ -203,7 +207,55 @@ export class LiminalAPI {
     return unlisten;
   }
 
-  /** Remove all event listeners registered via startAutoSync. */
+  /**
+   * Check for an application update. Returns the update info when one is
+   * available, null otherwise (or when running outside Tauri).
+   * Also causes the backend to emit `update-available` / `update-not-available`.
+   */
+  async checkForUpdates(): Promise<UpdateInfo | null> {
+    const invoke = tauriInvoke();
+    if (!invoke) return null;
+    try {
+      return ((await invoke('check_for_updates')) as UpdateInfo | null) ?? null;
+    } catch (e) {
+      throw new LiminalAPIError('Failed to check for updates', e);
+    }
+  }
+
+  /**
+   * Download and install a pending update. The backend emits
+   * `update-download-progress` events while downloading, then restarts the app.
+   */
+  async installUpdate(): Promise<void> {
+    const invoke = tauriInvoke();
+    if (!invoke) {
+      console.log('[liminal-api] mock installUpdate');
+      return;
+    }
+    try {
+      await invoke('install_update');
+    } catch (e) {
+      throw new LiminalAPIError('Failed to install update', e);
+    }
+  }
+
+  /**
+   * Subscribe to `update-available` events (fired by both the startup check
+   * and manual checks). Returns an unsubscribe function. No-op outside Tauri.
+   */
+  onUpdateAvailable(callback: (info: UpdateInfo) => void): () => void {
+    const listen = tauriListen();
+    if (!listen) return () => {};
+    const unlistenPromise = listen('update-available', (event) => {
+      callback(event.payload as UpdateInfo);
+    });
+    unlistenPromise.then((unlisten) => this.unlisteners.push(unlisten));
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }
+
+  /** Remove all event listeners registered via startAutoSync/onUpdateAvailable. */
   destroy(): void {
     for (const u of this.unlisteners) u();
     this.unlisteners = [];

@@ -12,6 +12,13 @@ export interface MandatoryOptions {
   runOnBattery: boolean;
   /** Enable debug mode (loads saverUrlDebug instead of saverUrl) */
   debug: boolean;
+  /**
+   * User consent for feed notifications — opt-in, defaults to false.
+   * Only meaningful when the fork configures a notification feed URL.
+   * Optional in payloads: liminalAPI.setOptions() merges with the current
+   * options, so omitting it leaves the user's consent unchanged.
+   */
+  notificationsEnabled?: boolean;
 }
 
 /**
@@ -38,6 +45,12 @@ export interface AppOptions extends MandatoryOptions {
   appDescription: string;
   /** Fork-defined custom fields */
   customOptions: CustomOptions;
+  /** User consent for feed notifications — always present in get_options results */
+  notificationsEnabled: boolean;
+  /** Notification feed URL (env-controlled, read-only; empty = feature disabled) */
+  notificationUrl: string;
+  /** Notification poll interval in seconds (env-controlled, read-only) */
+  notificationCheckIntervalSecs: number;
 }
 
 /**
@@ -45,3 +58,14 @@ export interface AppOptions extends MandatoryOptions {
  * Read-only identity fields (saverUrl, appName, etc.) are always preserved by the backend.
  */
 export type SetOptionsPayload = MandatoryOptions & { customOptions?: CustomOptions };
+
+/**
+ * Info about an available application update, as returned by
+ * checkForUpdates() and delivered by the `update-available` event.
+ */
+export interface UpdateInfo {
+  /** Version string of the available update */
+  version: string;
+  /** Release notes, when provided by the release */
+  notes?: string;
+}

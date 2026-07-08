@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "opener:default",
@@ -20,6 +22,7 @@
     "core:window:allow-maximize",
     "core:window:allow-set-fullscreen",
     "core:window:allow-set-decorations",
-    "store:default"
+    "store:default",
+    "notification:default"
   ]
 }

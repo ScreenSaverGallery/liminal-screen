@@ -83,6 +83,21 @@
                             class="option-checkbox"
                         />
                     </div>
+                    <div
+                        class="option-item checkbox-item"
+                        id="notifications-item"
+                        hidden
+                    >
+                        <label class="option-label" for="notifications-enabled"
+                            >Allow Notifications:</label
+                        >
+                        <input
+                            type="checkbox"
+                            id="notifications-enabled"
+                            name="notificationsEnabled"
+                            class="option-checkbox"
+                        />
+                    </div>
                     <div class="option-item checkbox-item">
                         <label class="option-label" for="debug-mode"
                             >Debug Mode:</label
@@ -133,6 +148,25 @@
                 <p class="info-text">
                     Use the system tray icon to preview the screensaver or quit
                     the application.
+                </p>
+                <p class="info-text" id="update-section">
+                    <strong>Updates:</strong>
+                    <span id="update-status-text">Up to date</span>
+                    <button
+                        id="check-updates-btn"
+                        type="button"
+                        class="btn btn-secondary btn-small"
+                    >
+                        Check
+                    </button>
+                    <button
+                        id="install-update-btn"
+                        type="button"
+                        class="btn btn-primary btn-small"
+                        hidden
+                    >
+                        Install
+                    </button>
                 </p>
                 <p class="info-text" id="saver-url-info">
                     <strong>Screensaver URL:</strong>

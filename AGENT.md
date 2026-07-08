@@ -29,9 +29,9 @@ Your code style:
 | Cross-platform | Tauri plugins | `store`, `dialog`, `opener`, `updater`, `notification` |
 | State Management | Custom `Signal<T>` | `src/app/reactive.ts` |
 | Persistence | `tauri-plugin-store` | JSON file store |
-| macOS-specific | objc2, core-foundation, core-graphics, io-kit-sys, mach2 | See `Cargo.toml` |
-| Windows-specific | windows-rs | `Win32_System_Power`, etc. |
-| Linux-specific | webkit2gtk, gtk, glib | See `Cargo.toml` |
+| macOS-specific | objc2, core-foundation (+ CoreGraphics/IOKit FFI) | See `Cargo.toml` |
+| Windows-specific | windows-rs | `Win32_System_Power`, `Win32_UI_WindowsAndMessaging`, etc. |
+| Linux-specific | webkit2gtk (must match tauri's version/features) | See `Cargo.toml` |
 
 ---
 
@@ -258,6 +258,8 @@ refactor(frontend): inline OptionsManager into main.ts
 Before committing, verify:
 
 - [ ] `cargo check` passes with zero errors
+- [ ] `cargo test` passes (unit tests in `src-tauri`)
+- [ ] `bun run test` passes (vitest unit tests)
 - [ ] `bun run build` succeeds (Vite build + TypeScript compilation)
 - [ ] `bun run tauri build` succeeds (if touching Rust)
 - [ ] New code follows naming conventions (§3)
@@ -324,9 +326,9 @@ bun run build    # in packages/liminal-api/
 
 ### 7.3 Platform Notes
 
-- **macOS**: Requires Accessibility permissions for `CGSession -suspend` (lock feature)
-- **Windows**: Autoplay requires WebView2 configuration before navigation
-- **Linux**: Uses systemd-inhibit + X11 screensaver queries; `loginctl` for lock
+- **macOS**: Lock requires Accessibility permission (AppleScript keystroke); falls back to ScreenSaverEngine/pmset. Idle time + battery via CoreGraphics/IOKit FFI.
+- **Windows**: Autoplay set via `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` (`--autoplay-policy`) before webview creation. Sleep inhibition runs on a dedicated thread (`SetThreadExecutionState` is per-thread).
+- **Linux**: X11 idle via `xprintidle`; Wayland idle via D-Bus (Mutter IdleMonitor, org.freedesktop.ScreenSaver). Lock via `loginctl`/D-Bus; blank via `xset` (X11) / `kscreen-doctor` (KDE Wayland). systemd-inhibit for sleep prevention.
 
 ---
 
@@ -354,4 +356,4 @@ The following facts are persistently important:
 
 ---
 
-*Last updated: 2026-04-25*
+*Last updated: 2026-07-08*

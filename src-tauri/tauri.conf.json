@@ -53,7 +53,7 @@
     "updater": {
       "pubkey": "CONTENT FROM PUBLICKEY.PEM",
       "endpoints": [
-        "https://github.com/screensavergallery/liminal-screen/releases/download/latest.json"
+        "https://github.com/screensavergallery/liminal-screen/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

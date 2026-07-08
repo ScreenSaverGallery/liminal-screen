@@ -1,6 +1,8 @@
-- [ ] unit tests, e2e tests
-- [ ] autoupdate implementation (add to liminal-api, add to options/main window, add to menu), see: https://v2.tauri.app/plugin/updater/ (the main part already implemented in updater.rs, tauri.conf.json, keys are in /${home}/.tauri/)
-- [ ] notifications (!) see: https://v2.tauri.app/plugin/notification/ (should make a plan -> check interval, no push api, url in .env?...)
+- [ ] e2e tests, see: .hermes/plans/testing/PLAN.md Part B (unit tests done)
+- [x] unit tests (Rust: `cargo test` in src-tauri; TS: `bun run test` — see .hermes/plans/testing/)
+- [x] autoupdate implementation (liminal-api, options/main window, tray menu), see: .hermes/plans/autoupdate/ (keys are in /${home}/.tauri/)
+- [x] notifications — remote feed polling via tauri-plugin-notification, see: .hermes/plans/notifications/ (feed URL in .env: VITE_NOTIFICATION_URL)
+- [x] multi-platform fixes (Windows/Linux compile blockers, Wayland idle detection), see: .hermes/plans/multiplatform-fixes/
 - [x] test not on a real 'saver' app, but a minimal video setup (at a time, the most problematic part)
 - [x] debug preview saver by user click -> it closes immediatelly
 - [x] remote options api (+ shared key), check, implement to remote secret

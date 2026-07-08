@@ -6,6 +6,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 
+import { formatIdle } from "./app/format";
 import { PowerMonitor } from "./app/power-monitor/power-monitor";
 import { Preview } from "./app/preview/preview";
 import { Signal } from "./app/reactive";
@@ -29,6 +30,13 @@ const status = new Signal<ScreensaverStatus>({
 const isActive = status.derive((s) => s.active || s.previewActive);
 const idleSignal = status.derive((s) => s.idleSeconds);
 
+interface UpdateInfo {
+  version: string;
+  notes?: string;
+}
+const updateAvailable = new Signal<UpdateInfo | null>(null);
+const updateChecking = new Signal<boolean>(false);
+
 let previewWindow: Preview | null = null;
 
 // ── UI Elements ────────────────────────────────────────────────────────────
@@ -41,6 +49,8 @@ let displayOffInput: HTMLInputElement | null = null;
 let requirePassInInput: HTMLInputElement | null = null;
 let runOnBatteryInput: HTMLInputElement | null = null;
 let debugInput: HTMLInputElement | null = null;
+let notificationsEnabledInput: HTMLInputElement | null = null;
+let notificationsItem: HTMLElement | null = null;
 let saverUrlDisplay: HTMLElement | null = null;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -51,13 +61,6 @@ async function openExternalLink(url: string): Promise<void> {
   } catch {
     window.open(url, "_blank");
   }
-}
-
-function formatIdle(secs: number): string {
-  if (secs < 60) return `Idle: ${Math.floor(secs)}s`;
-  if (secs < 3600)
-    return `Idle: ${Math.floor(secs / 60)}m ${Math.floor(secs % 60)}s`;
-  return `Idle: ${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
@@ -111,6 +114,17 @@ function setupEventListeners(): void {
     status.update((s) => ({ ...s, active: false })),
   );
 
+  // Updates
+  listen<UpdateInfo>("update-available", (event) => {
+    updateChecking.set(false);
+    updateAvailable.set(event.payload);
+  });
+  listen("update-not-available", () => {
+    updateChecking.set(false);
+    updateAvailable.set(null);
+  });
+  listen("update-installed", () => updateAvailable.set(null));
+
   // Idle time — poll every second (no Rust event available for this yet)
   setInterval(async () => {
     try {
@@ -156,6 +170,10 @@ function cacheUIElements(): void {
     "run-on-battery",
   ) as HTMLInputElement | null;
   debugInput = document.getElementById("debug-mode") as HTMLInputElement | null;
+  notificationsEnabledInput = document.getElementById(
+    "notifications-enabled",
+  ) as HTMLInputElement | null;
+  notificationsItem = document.getElementById("notifications-item");
   saverUrlDisplay = document.getElementById("saver-url-display");
 
   [
@@ -164,6 +182,7 @@ function cacheUIElements(): void {
     requirePassInInput,
     runOnBatteryInput,
     debugInput,
+    notificationsEnabledInput,
   ].forEach((el) => el?.addEventListener("change", () => saveOptions(true)));
 }
 
@@ -195,6 +214,35 @@ function setupUIButtonHandlers(): void {
     }
   });
 
+  document
+    .getElementById("check-updates-btn")
+    ?.addEventListener("click", async () => {
+      updateChecking.set(true);
+      try {
+        await invoke("check_for_updates");
+      } catch (error) {
+        updateChecking.set(false);
+        console.error("Update check failed:", error);
+        await message(`Update check failed: ${error}`, {
+          title: "Updates",
+          kind: "error",
+        });
+      }
+    });
+  document
+    .getElementById("install-update-btn")
+    ?.addEventListener("click", async () => {
+      try {
+        await invoke("install_update");
+      } catch (error) {
+        console.error("Update install failed:", error);
+        await message(`Update install failed: ${error}`, {
+          title: "Updates",
+          kind: "error",
+        });
+      }
+    });
+
   document.querySelectorAll(".external-link").forEach((el: Element) => {
     el?.addEventListener("click", () => {
       const link = el.getAttribute("data");
@@ -220,6 +268,9 @@ async function saveOptions(silent = false): Promise<void> {
     ? runOnBatteryInput.checked
     : current.runOnBattery;
   const debug = debugInput ? debugInput.checked : current.debug;
+  const notificationsEnabled = notificationsEnabledInput
+    ? notificationsEnabledInput.checked
+    : current.notificationsEnabled;
 
   if (isNaN(startsIn) || startsIn < 0.1) {
     if (!silent)
@@ -255,6 +306,7 @@ async function saveOptions(silent = false): Promise<void> {
         requirePassIn,
         runOnBattery,
         debug,
+        notificationsEnabled,
       },
     });
     options.set(await invoke<AppOptions>("get_options"));
@@ -331,6 +383,10 @@ window.addEventListener("DOMContentLoaded", () => {
       requirePassInInput.value = String(opts.requirePassIn);
     if (runOnBatteryInput) runOnBatteryInput.checked = opts.runOnBattery;
     if (debugInput) debugInput.checked = opts.debug;
+    if (notificationsEnabledInput)
+      notificationsEnabledInput.checked = opts.notificationsEnabled;
+    // Consent toggle only makes sense when the fork ships a notification feed
+    if (notificationsItem) notificationsItem.hidden = !opts.notificationUrl;
     if (saverUrlDisplay) {
       saverUrlDisplay.textContent =
         (opts.debug ? opts.saverUrlDebug : opts.saverUrl) || "Not configured";
@@ -350,6 +406,24 @@ window.addEventListener("DOMContentLoaded", () => {
   idleSignal.effect((secs) => {
     if (idleTimeElement) idleTimeElement.textContent = formatIdle(secs);
   });
+
+  const renderUpdateRow = () => {
+    const statusEl = document.getElementById("update-status-text");
+    const installBtn = document.getElementById(
+      "install-update-btn",
+    ) as HTMLButtonElement | null;
+    const info = updateAvailable.get();
+    if (statusEl) {
+      statusEl.textContent = updateChecking.get()
+        ? "Checking…"
+        : info
+          ? `v${info.version} available`
+          : "Up to date";
+    }
+    if (installBtn) installBtn.hidden = !info;
+  };
+  updateAvailable.effect(renderUpdateRow);
+  updateChecking.effect(renderUpdateRow);
 
   init();
 });

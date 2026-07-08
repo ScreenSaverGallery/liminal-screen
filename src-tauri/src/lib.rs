@@ -3,6 +3,7 @@
 
 pub mod autoplay_media;
 pub mod display_manager;
+pub mod notification_service;
 pub mod power_monitor;
 pub mod screensaver_engine;
 pub mod updater;
@@ -33,6 +34,20 @@ fn init_env() {
 const OPTIONS_LABEL: &str = "options";
 /// Main window label
 const MAIN_WINDOW_LABEL: &str = "main";
+
+/// Read a VITE_* setting: runtime environment first (dev, where dotenv loads
+/// ../.env), then the value baked in at compile time (release builds — a
+/// bundled app launched from Finder/Explorer has no VITE_* vars in its
+/// runtime environment, so `std::env::var` alone silently loses the fork
+/// identity in production).
+macro_rules! env_setting {
+    ($name:literal) => {
+        std::env::var($name)
+            .ok()
+            .filter(|v| !v.is_empty())
+            .or_else(|| option_env!($name).map(String::from))
+    };
+}
 
 /// Load persisted options from the store, falling back to env var defaults.
 /// This ensures the backend uses user-saved preferences, not just .env defaults.
@@ -69,6 +84,11 @@ fn load_persisted_options<R: Runtime>(
     if let Some(debug) = store.get("debug") {
         if let Some(val) = debug.as_bool() {
             options.debug = val;
+        }
+    }
+    if let Some(notifications_enabled) = store.get("notificationsEnabled") {
+        if let Some(val) = notifications_enabled.as_bool() {
+            options.notifications_enabled = val;
         }
     }
 
@@ -114,39 +134,56 @@ pub struct AppOptions {
     pub custom_options: serde_json::Value,
     // Auto-generated instance UUID — persisted, regenerated on factory reset, never user-settable
     pub instance_id: String,
+    // Notifications — env only, never persisted. Empty URL disables the feature.
+    #[serde(default)]
+    pub notification_url: String,
+    #[serde(default = "default_notification_interval")]
+    pub notification_check_interval_secs: u64,
+    // User consent for notifications — persisted, user-settable, opt-in.
+    // No notification is ever shown while this is false.
+    #[serde(default)]
+    pub notifications_enabled: bool,
+}
+
+fn default_notification_interval() -> u64 {
+    3600
 }
 
 impl Default for AppOptions {
     fn default() -> Self {
         Self {
-            saver_url: std::env::var("VITE_SAVER_URL")
-                .unwrap_or_else(|_| "about:blank".to_string()),
-            saver_url_debug: std::env::var("VITE_SAVER_URL_DEBUG")
-                .unwrap_or_else(|_| "about:blank".to_string()),
-            options_url: std::env::var("VITE_OPTIONS_URL").unwrap_or_default(),
-            app_name: std::env::var("VITE_APP_NAME")
-                .unwrap_or_else(|_| "Liminal Screen".to_string()),
-            app_description: std::env::var("VITE_APP_DESCRIPTION").unwrap_or_default(),
-            starts_in: std::env::var("VITE_DEFAULT_STARTS_IN")
-                .ok()
+            saver_url: env_setting!("VITE_SAVER_URL").unwrap_or_else(|| "about:blank".to_string()),
+            saver_url_debug: env_setting!("VITE_SAVER_URL_DEBUG")
+                .unwrap_or_else(|| "about:blank".to_string()),
+            options_url: env_setting!("VITE_OPTIONS_URL").unwrap_or_default(),
+            app_name: env_setting!("VITE_APP_NAME").unwrap_or_else(|| "Liminal Screen".to_string()),
+            app_description: env_setting!("VITE_APP_DESCRIPTION").unwrap_or_default(),
+            starts_in: env_setting!("VITE_DEFAULT_STARTS_IN")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.2),
-            display_off_in: std::env::var("VITE_DEFAULT_DISPLAY_OFF_IN")
-                .ok()
+            display_off_in: env_setting!("VITE_DEFAULT_DISPLAY_OFF_IN")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1.0),
-            require_pass_in: std::env::var("VITE_DEFAULT_REQUIRE_PASS_IN")
-                .ok()
+            require_pass_in: env_setting!("VITE_DEFAULT_REQUIRE_PASS_IN")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1.0),
-            run_on_battery: std::env::var("VITE_DEFAULT_RUN_ON_BATTERY")
+            run_on_battery: env_setting!("VITE_DEFAULT_RUN_ON_BATTERY")
                 .map(|s| s == "true")
                 .unwrap_or(false),
-            debug: std::env::var("VITE_DEFAULT_DEBUG")
+            debug: env_setting!("VITE_DEFAULT_DEBUG")
                 .map(|s| s == "true")
                 .unwrap_or(false),
             custom_options: serde_json::Value::Object(serde_json::Map::new()),
             instance_id: uuid::Uuid::new_v4().to_string(),
+            notification_url: env_setting!("VITE_NOTIFICATION_URL").unwrap_or_default(),
+            notification_check_interval_secs: env_setting!("VITE_NOTIFICATION_CHECK_INTERVAL_SECS")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(3600),
+            // Opt-in by default: the user must consent in the options window
+            // before any feed notification is shown
+            notifications_enabled: env_setting!("VITE_DEFAULT_NOTIFICATIONS_ENABLED")
+                .map(|s| s == "true")
+                .unwrap_or(false),
         }
     }
 }
@@ -183,7 +220,11 @@ fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::err
     // Get the main window and hide it initially if desired
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         // Window is already created by tauri.conf.json
-        let title = std::env::var("VITE_APP_NAME").unwrap_or_else(|_| "Liminal Screen".to_string());
+        let title = {
+            let state = app.state::<AppState>();
+            let options = state.options.lock().unwrap();
+            options.app_name.clone()
+        };
         let _ = window.set_title(&title);
     }
 
@@ -201,24 +242,38 @@ fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::err
     // Spawn update checker in background
     let handle = app.handle().clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = updater::update(handle).await {
+        if let Err(e) = updater::update_silent(handle).await {
             eprintln!("[updater] Error: {}", e);
         }
     });
+
+    // Start remote notification feed polling (exits immediately when no URL is configured)
+    notification_service::start_notification_service(app.handle().clone());
 
     Ok(())
 }
 
 /// Create the system tray
 fn create_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
-    let app_name = std::env::var("VITE_APP_NAME").unwrap_or_else(|_| "Liminal Screen".to_string());
+    let app_name = {
+        let state = app.state::<AppState>();
+        let options = state.options.lock().unwrap();
+        options.app_name.clone()
+    };
 
     // Create menu items - no Show/Hide since main window is fallback only
     let options_i = MenuItem::with_id(app, "options", "Options", true, None::<&str>)?;
     let preview_i = MenuItem::with_id(app, "preview", "Preview Screensaver", true, None::<&str>)?;
+    let check_updates_i = MenuItem::with_id(
+        app,
+        "check-updates",
+        "Check for Updates",
+        true,
+        None::<&str>,
+    )?;
     let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
-    let menu = Menu::with_items(app, &[&options_i, &preview_i, &quit_i])?;
+    let menu = Menu::with_items(app, &[&options_i, &preview_i, &check_updates_i, &quit_i])?;
 
     // Load tray icon
     let icon = app
@@ -237,6 +292,14 @@ fn create_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::error
             }
             "preview" => {
                 let _ = preview_screensaver(app.clone());
+            }
+            "check-updates" => {
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = updater::check_update(handle).await {
+                        eprintln!("[updater] Manual check failed: {}", e);
+                    }
+                });
             }
             "quit" => {
                 app.exit(0);
@@ -351,7 +414,7 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
         .resizable(true)
         .decorations(true)
         .visible(true)
-        .initialization_script(&build_init_script(&instance_id, &app_name))
+        .initialization_script(build_init_script(&instance_id, &app_name))
         .build()
         .map_err(|e| format!("Failed to create options window: {}", e))?;
 
@@ -365,7 +428,7 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
 fn preview_screensaver<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     // TODO: Implement token validation when security is enabled
     // Emit event to main window to start preview
-    app.emit("preview-screensaver", {})
+    app.emit("preview-screensaver", ())
         .map_err(|e| format!("Failed to emit preview event: {}", e))
 }
 
@@ -410,7 +473,7 @@ fn create_preview_window<R: Runtime>(
         .visible(true)
         .always_on_top(false)
         .skip_taskbar(false)
-        .initialization_script(&build_init_script(&instance_id, &app_name))
+        .initialization_script(build_init_script(&instance_id, &app_name))
         .build()
         .map_err(|e| format!("Failed to create preview window: {}", e))?;
     Ok(())
@@ -436,6 +499,9 @@ fn factory_reset_options<R: Runtime>(
         let mut current = state.options.lock().unwrap();
         *current = default_options.clone();
     }
+    // Notify all windows (options UI, remote pages via liminal-api)
+    let _ = app.emit("reset-options", ());
+    let _ = app.emit("options-updated", default_options.clone());
     Ok(default_options)
 }
 
@@ -461,6 +527,13 @@ fn set_options<R: Runtime>(
 ) -> Result<(), String> {
     validate_options(&options)?;
 
+    // Non-object custom options are ignored, not persisted
+    let custom_options = if options.custom_options.is_object() {
+        options.custom_options.clone()
+    } else {
+        serde_json::Value::Object(serde_json::Map::new())
+    };
+
     // Preserve identity fields — these are fork-controlled via .env, never user-settable
     let new_options = {
         let current = state.options.lock().unwrap();
@@ -471,25 +544,30 @@ fn set_options<R: Runtime>(
             app_name: current.app_name.clone(),
             app_description: current.app_description.clone(),
             instance_id: current.instance_id.clone(),
-            ..options.clone()
+            notification_url: current.notification_url.clone(),
+            notification_check_interval_secs: current.notification_check_interval_secs,
+            custom_options,
+            ..options
         }
     };
-    *state.options.lock().unwrap() = new_options;
+    *state.options.lock().unwrap() = new_options.clone();
 
     let store = app
         .store("options.json")
         .map_err(|e| format!("Failed to open store: {}", e))?;
-    store.set("startsIn", options.starts_in);
-    store.set("displayOffIn", options.display_off_in);
-    store.set("requirePassIn", options.require_pass_in);
-    store.set("runOnBattery", options.run_on_battery);
-    store.set("debug", options.debug);
-    if options.custom_options.is_object() {
-        store.set("customOptions", options.custom_options);
-    }
+    store.set("startsIn", new_options.starts_in);
+    store.set("displayOffIn", new_options.display_off_in);
+    store.set("requirePassIn", new_options.require_pass_in);
+    store.set("runOnBattery", new_options.run_on_battery);
+    store.set("debug", new_options.debug);
+    store.set("notificationsEnabled", new_options.notifications_enabled);
+    store.set("customOptions", new_options.custom_options.clone());
     store
         .save()
         .map_err(|e| format!("Failed to save options: {}", e))?;
+
+    // Notify all windows (options UI, remote pages via liminal-api startAutoSync)
+    let _ = app.emit("options-updated", new_options);
 
     Ok(())
 }
@@ -569,7 +647,7 @@ fn navigate_webview(app: AppHandle, label: String, url: String) -> Result<(), St
 #[tauri::command]
 fn evaluate_javascript(app: AppHandle, label: String, script: String) -> Result<String, String> {
     if let Some(window) = app.get_webview_window(&label) {
-        let _result = window.eval(&script).map_err(|e| e.to_string())?;
+        window.eval(&script).map_err(|e| e.to_string())?;
         Ok("Executed".to_string())
     } else {
         Err(format!("Window {} not found", label))
@@ -588,10 +666,26 @@ fn release_app_power_blocker<R: tauri::Runtime>(_app: tauri::AppHandle<R>) -> Re
     power_monitor::allow_display_sleep_direct()
 }
 
-/// Open devtools (requires `devtools` Cargo feature + debug build)
+/// Open devtools for the calling window (the `devtools` Cargo feature is enabled)
 #[tauri::command]
-fn open_devtools(_window: tauri::Window) {
-    // Intentionally left as a stub — enable the `devtools` Cargo feature to implement
+fn open_devtools(window: tauri::WebviewWindow) {
+    window.open_devtools();
+}
+
+/// Command for a user-triggered update check. Emits `update-available` /
+/// `update-not-available` and also returns the result directly.
+#[tauri::command]
+async fn check_for_updates(app: AppHandle) -> Result<Option<updater::UpdateInfo>, String> {
+    updater::check_update(app).await.map_err(|e| e.to_string())
+}
+
+/// Command to download + install a pending update. Emits progress events and
+/// restarts the app when done.
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    updater::download_and_install(app)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Main entry point
@@ -600,8 +694,23 @@ pub fn run() {
     // Load environment variables from .env file (development only)
     init_env();
 
+    // WebView2 has no runtime autoplay switch — the policy must be passed as a
+    // browser argument before the first webview is created.
+    #[cfg(target_os = "windows")]
+    {
+        let mut args = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+        if !args.contains("--autoplay-policy") {
+            if !args.is_empty() {
+                args.push(' ');
+            }
+            args.push_str("--autoplay-policy=no-user-gesture-required");
+            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", args);
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
@@ -611,6 +720,8 @@ pub fn run() {
         .setup(setup_app)
         .invoke_handler(tauri::generate_handler![
             open_devtools,
+            check_for_updates,
+            install_update,
             get_options,
             set_options,
             factory_reset_options,
@@ -638,4 +749,120 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_options_have_valid_timing() {
+        let opts = AppOptions::default();
+        assert!(validate_options(&opts).is_ok());
+    }
+
+    #[test]
+    fn validate_options_rejects_starts_in_too_low() {
+        let opts = AppOptions {
+            starts_in: 0.05,
+            ..AppOptions::default()
+        };
+        assert!(validate_options(&opts).is_err());
+    }
+
+    #[test]
+    fn validate_options_rejects_display_off_too_low() {
+        let opts = AppOptions {
+            display_off_in: 0.4,
+            ..AppOptions::default()
+        };
+        assert!(validate_options(&opts).is_err());
+    }
+
+    #[test]
+    fn validate_options_rejects_negative_require_pass() {
+        let opts = AppOptions {
+            require_pass_in: -1.0,
+            ..AppOptions::default()
+        };
+        assert!(validate_options(&opts).is_err());
+    }
+
+    #[test]
+    fn validate_options_accepts_boundary_values() {
+        let opts = AppOptions {
+            starts_in: 0.1,
+            display_off_in: 0.5,
+            require_pass_in: 0.0,
+            ..AppOptions::default()
+        };
+        assert!(validate_options(&opts).is_ok());
+    }
+
+    #[test]
+    fn validate_options_rejects_values_over_max() {
+        let opts = AppOptions {
+            starts_in: 1441.0,
+            ..AppOptions::default()
+        };
+        assert!(validate_options(&opts).is_err());
+    }
+
+    #[test]
+    fn instance_id_is_valid_uuid() {
+        let opts = AppOptions::default();
+        assert!(uuid::Uuid::parse_str(&opts.instance_id).is_ok());
+    }
+
+    #[test]
+    fn two_defaults_have_different_instance_ids() {
+        let a = AppOptions::default();
+        let b = AppOptions::default();
+        assert_ne!(a.instance_id, b.instance_id);
+    }
+
+    #[test]
+    fn options_serialize_to_camel_case() {
+        let opts = AppOptions::default();
+        let json = serde_json::to_value(&opts).unwrap();
+        assert!(json.get("startsIn").is_some());
+        assert!(json.get("displayOffIn").is_some());
+        assert!(json.get("instanceId").is_some());
+        assert!(json.get("notificationUrl").is_some());
+    }
+
+    #[test]
+    fn notifications_are_opt_in_by_default() {
+        // Guard: the default can legitimately be flipped via env/compile-time
+        // setting; only assert when the fork has not overridden it.
+        let overridden = std::env::var("VITE_DEFAULT_NOTIFICATIONS_ENABLED").is_ok()
+            || option_env!("VITE_DEFAULT_NOTIFICATIONS_ENABLED").is_some();
+        if !overridden {
+            assert!(!AppOptions::default().notifications_enabled);
+        }
+    }
+
+    #[test]
+    fn notifications_consent_defaults_to_false_when_missing_from_payload() {
+        // Payloads from older SDKs won't contain the field — consent must
+        // never be implicitly granted by deserialization.
+        let json = serde_json::to_value(AppOptions::default()).unwrap();
+        let mut map = json.as_object().unwrap().clone();
+        map.remove("notificationsEnabled");
+        let opts: AppOptions = serde_json::from_value(serde_json::Value::Object(map)).unwrap();
+        assert!(!opts.notifications_enabled);
+    }
+
+    #[test]
+    fn init_script_escapes_single_quotes_and_backslashes() {
+        let script = build_init_script("uuid-123", r"It's \ tricky");
+        assert!(script.contains(r"It\'s \\ tricky"));
+        assert!(script.contains("uuid-123"));
+    }
+
+    #[test]
+    fn init_script_contains_version_suffix() {
+        let script = build_init_script("id", "App");
+        assert!(script.contains(&format!("LiminalScreen/{}", env!("CARGO_PKG_VERSION"))));
+    }
 }

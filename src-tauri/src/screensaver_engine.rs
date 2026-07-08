@@ -19,6 +19,80 @@ pub struct ScreensaverStatus {
     pub is_monitoring: bool,
 }
 
+/// Pure state-machine step: given the current idle time, thresholds and state,
+/// decide which state (if any) to transition to next.
+///
+/// Priority: Lock > Display Off > Screensaver Active > Idle (deactivation).
+/// Returns None when no transition is needed.
+pub fn compute_next_action(
+    idle_secs: u64,
+    starts_in_secs: u64,
+    display_off_secs: u64,
+    require_pass_secs: u64,
+    current_state: ScreensaverState,
+) -> Option<ScreensaverState> {
+    // PRIORITY 1: LOCK (security) — only when enabled (require_pass_secs > 0)
+    if require_pass_secs > 0 && idle_secs >= require_pass_secs {
+        return (current_state != ScreensaverState::Locked).then_some(ScreensaverState::Locked);
+    }
+
+    // PRIORITY 2: DISPLAY OFF (power saving)
+    if idle_secs >= display_off_secs {
+        return (current_state != ScreensaverState::DisplayOff)
+            .then_some(ScreensaverState::DisplayOff);
+    }
+
+    // PRIORITY 3: SCREENSAVER ACTIVATION (visual) — requires the screensaver
+    // window to actually get screen time before display-off kicks in
+    if idle_secs >= starts_in_secs
+        && current_state == ScreensaverState::Idle
+        && starts_in_secs < display_off_secs
+    {
+        return Some(ScreensaverState::ScreensaverActive);
+    }
+
+    // PRIORITY 4: DEACTIVATION (user activity)
+    if idle_secs < starts_in_secs && current_state != ScreensaverState::Idle {
+        return Some(ScreensaverState::Idle);
+    }
+
+    None
+}
+
+/// Pure URL builder: appends primitive custom options as query parameters.
+/// Nested objects, arrays and null values are skipped. Returns the base URL
+/// untouched when there is nothing to append (avoids gratuitous normalization).
+pub fn build_saver_url(
+    base_url: &str,
+    custom_options: &serde_json::Value,
+) -> Result<String, String> {
+    let map = match custom_options {
+        serde_json::Value::Object(map) if !map.is_empty() => map,
+        _ => return Ok(base_url.to_string()),
+    };
+
+    let mut url: url::Url = base_url
+        .parse()
+        .map_err(|e| format!("Invalid saver URL '{}': {}", base_url, e))?;
+
+    {
+        let mut params = url.query_pairs_mut();
+        for (key, value) in map {
+            let str_val = match value {
+                serde_json::Value::String(s) => Some(s.clone()),
+                serde_json::Value::Number(n) => Some(n.to_string()),
+                serde_json::Value::Bool(b) => Some(b.to_string()),
+                _ => None, // skip nested objects/arrays/null
+            };
+            if let Some(val) = str_val {
+                params.append_pair(key, &val);
+            }
+        }
+    }
+
+    Ok(url.to_string())
+}
+
 #[derive(Clone)]
 pub struct ScreensaverEngine {
     is_monitoring: Arc<AtomicBool>,
@@ -26,6 +100,12 @@ pub struct ScreensaverEngine {
     /// True when a state transition has been dispatched but not yet completed
     /// on the main thread. Prevents duplicate dispatches.
     pending_transition: Arc<AtomicBool>,
+}
+
+impl Default for ScreensaverEngine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ScreensaverEngine {
@@ -104,10 +184,10 @@ impl ScreensaverEngine {
             match super::power_monitor::is_on_battery_power() {
                 Ok(on_battery) => {
                     if on_battery {
-                        if self.get_state() != ScreensaverState::Idle {
-                            if !self.pending_transition.load(Ordering::Relaxed) {
-                                self.request_deactivate(app);
-                            }
+                        if self.get_state() != ScreensaverState::Idle
+                            && !self.pending_transition.load(Ordering::Relaxed)
+                        {
+                            self.request_deactivate(app);
                         }
                         return Ok(());
                     }
@@ -116,39 +196,23 @@ impl ScreensaverEngine {
             }
         }
 
-        let current_state = self.get_state();
-
         // Skip all checks if a transition is already in flight
         if self.pending_transition.load(Ordering::Relaxed) {
             return Ok(());
         }
 
-        // === PRIORITY 1: LOCK (Security) ===
-        if require_pass_seconds > 0 && idle_time >= require_pass_seconds {
-            if current_state != ScreensaverState::Locked {
-                self.request_lock(app);
-            }
-            return Ok(());
-        }
-
-        // === PRIORITY 2: DISPLAY OFF (Power Saving) ===
-        if idle_time >= display_off_seconds && current_state != ScreensaverState::DisplayOff {
-            self.request_display_off(app);
-            return Ok(());
-        }
-
-        // === PRIORITY 3: SCREENSAVER ACTIVATION (Visual) ===
-        if idle_time >= starts_in_seconds
-            && current_state == ScreensaverState::Idle
-            && starts_in_seconds < display_off_seconds
-        {
-            self.request_activate(app);
-            return Ok(());
-        }
-
-        // === PRIORITY 4: DEACTIVATION (User Activity) ===
-        if idle_time < starts_in_seconds && current_state != ScreensaverState::Idle {
-            self.request_deactivate(app);
+        match compute_next_action(
+            idle_time,
+            starts_in_seconds,
+            display_off_seconds,
+            require_pass_seconds,
+            self.get_state(),
+        ) {
+            Some(ScreensaverState::Locked) => self.request_lock(app),
+            Some(ScreensaverState::DisplayOff) => self.request_display_off(app),
+            Some(ScreensaverState::ScreensaverActive) => self.request_activate(app),
+            Some(ScreensaverState::Idle) => self.request_deactivate(app),
+            None => {}
         }
 
         Ok(())
@@ -394,7 +458,7 @@ impl ScreensaverEngine {
         .skip_taskbar(true)
         .visible(false)
         .focused(true)
-        .initialization_script(&super::build_init_script(&instance_id, &app_name));
+        .initialization_script(super::build_init_script(&instance_id, &app_name));
 
         let scale = monitor.scale_factor;
         let logical_x = monitor.position.x as f64 / scale;
@@ -492,35 +556,7 @@ impl ScreensaverEngine {
             options.saver_url.clone()
         };
 
-        if !options.custom_options.is_object() {
-            return Ok(base_url);
-        }
-
-        let custom = options.custom_options.clone();
-        drop(options);
-
-        let mut url: url::Url = base_url
-            .parse()
-            .map_err(|e| format!("Invalid saver URL: {}", e))?;
-
-        if let serde_json::Value::Object(map) = custom {
-            if !map.is_empty() {
-                let mut params = url.query_pairs_mut();
-                for (key, value) in &map {
-                    let str_val = match value {
-                        serde_json::Value::String(s) => Some(s.clone()),
-                        serde_json::Value::Number(n) => Some(n.to_string()),
-                        serde_json::Value::Bool(b) => Some(b.to_string()),
-                        _ => None, // skip nested objects/arrays/null
-                    };
-                    if let Some(val) = str_val {
-                        params.append_pair(key, &val);
-                    }
-                }
-            }
-        }
-
-        Ok(url.to_string())
+        build_saver_url(&base_url, &options.custom_options)
     }
 
     pub fn get_status(&self) -> ScreensaverStatus {
@@ -536,5 +572,134 @@ impl ScreensaverEngine {
 
     pub fn stop_engine(&self) {
         self.is_monitoring.store(false, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── compute_next_action ──────────────────────────────────────────────────
+
+    #[test]
+    fn lock_takes_priority_over_display_off() {
+        let next = compute_next_action(120, 30, 60, 90, ScreensaverState::ScreensaverActive);
+        assert_eq!(next, Some(ScreensaverState::Locked));
+    }
+
+    #[test]
+    fn already_locked_does_not_relock_every_tick() {
+        let next = compute_next_action(120, 30, 60, 90, ScreensaverState::Locked);
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn display_off_takes_priority_over_screensaver() {
+        let next = compute_next_action(70, 30, 60, 0, ScreensaverState::Idle);
+        assert_eq!(next, Some(ScreensaverState::DisplayOff));
+    }
+
+    #[test]
+    fn screensaver_activates_when_idle_enough() {
+        let next = compute_next_action(40, 30, 60, 0, ScreensaverState::Idle);
+        assert_eq!(next, Some(ScreensaverState::ScreensaverActive));
+    }
+
+    #[test]
+    fn deactivates_on_user_activity() {
+        let next = compute_next_action(5, 30, 60, 0, ScreensaverState::ScreensaverActive);
+        assert_eq!(next, Some(ScreensaverState::Idle));
+    }
+
+    #[test]
+    fn deactivates_from_display_off_on_user_activity() {
+        let next = compute_next_action(5, 30, 60, 0, ScreensaverState::DisplayOff);
+        assert_eq!(next, Some(ScreensaverState::Idle));
+    }
+
+    #[test]
+    fn no_change_when_idle_but_below_threshold() {
+        let next = compute_next_action(20, 30, 60, 0, ScreensaverState::Idle);
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn no_change_when_already_in_correct_state() {
+        let next = compute_next_action(70, 30, 60, 0, ScreensaverState::DisplayOff);
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn screensaver_does_not_activate_when_starts_in_equals_display_off() {
+        // starts_in < display_off_in is required for screensaver activation
+        let next = compute_next_action(60, 60, 60, 0, ScreensaverState::Idle);
+        assert_eq!(next, Some(ScreensaverState::DisplayOff));
+    }
+
+    #[test]
+    fn lock_disabled_when_require_pass_is_zero() {
+        let next = compute_next_action(300, 30, 60, 0, ScreensaverState::ScreensaverActive);
+        assert_ne!(next, Some(ScreensaverState::Locked));
+    }
+
+    #[test]
+    fn screensaver_stays_active_between_thresholds() {
+        let next = compute_next_action(45, 30, 60, 0, ScreensaverState::ScreensaverActive);
+        assert_eq!(next, None);
+    }
+
+    // ── build_saver_url ──────────────────────────────────────────────────────
+
+    #[test]
+    fn empty_custom_options_returns_base_url_untouched() {
+        let url = build_saver_url("https://example.com/saver", &serde_json::json!({})).unwrap();
+        assert_eq!(url, "https://example.com/saver");
+    }
+
+    #[test]
+    fn non_object_custom_options_returns_base_url() {
+        let url = build_saver_url("https://example.com", &serde_json::json!(null)).unwrap();
+        assert_eq!(url, "https://example.com");
+    }
+
+    #[test]
+    fn primitive_custom_options_become_query_params() {
+        let custom = serde_json::json!({"theme": "dark", "speed": 2, "loop": true});
+        let url = build_saver_url("https://example.com/saver", &custom).unwrap();
+        assert!(url.contains("theme=dark"));
+        assert!(url.contains("speed=2"));
+        assert!(url.contains("loop=true"));
+    }
+
+    #[test]
+    fn nested_and_null_custom_options_are_skipped() {
+        let custom =
+            serde_json::json!({"nested": {"a": 1}, "list": [1, 2], "nothing": null, "kept": "yes"});
+        let url = build_saver_url("https://example.com/saver", &custom).unwrap();
+        assert!(url.contains("kept=yes"));
+        assert!(!url.contains("nested"));
+        assert!(!url.contains("list"));
+        assert!(!url.contains("nothing"));
+    }
+
+    #[test]
+    fn custom_options_are_appended_to_existing_query() {
+        let custom = serde_json::json!({"b": "2"});
+        let url = build_saver_url("https://example.com/saver?a=1", &custom).unwrap();
+        assert!(url.contains("a=1"));
+        assert!(url.contains("b=2"));
+    }
+
+    #[test]
+    fn query_params_are_url_encoded() {
+        let custom = serde_json::json!({"msg": "hello world & more"});
+        let url = build_saver_url("https://example.com", &custom).unwrap();
+        assert!(url.contains("msg=hello+world+%26+more"));
+    }
+
+    #[test]
+    fn invalid_base_url_with_custom_options_errors() {
+        let custom = serde_json::json!({"a": "1"});
+        assert!(build_saver_url("not a url", &custom).is_err());
     }
 }

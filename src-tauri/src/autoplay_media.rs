@@ -1,11 +1,13 @@
-// src-tauri/src/autoplay_plugin.rs
+// Autoplay configuration for saver webviews.
+//
+// Screensaver content must be able to start audio/video without a user
+// gesture, so each platform's webview needs its autoplay policy relaxed
+// BEFORE any media content loads.
+
 use tauri::{
     plugin::{Builder, TauriPlugin},
-    Runtime, Webview,
+    Runtime,
 };
-
-#[cfg(target_os = "windows")]
-use windows::Win32::System::WinRT::IInspectable;
 
 #[cfg(target_os = "macos")]
 use objc2::msg_send;
@@ -14,10 +16,12 @@ use objc2::runtime::AnyObject;
 
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("autoplay")
-        .on_webview_ready(|window| {
-            // This is called for each window as it's created
-            println!("Configuring autoplay for window: {}", window.label());
-            configure_autoplay(window.clone());
+        .on_webview_ready(|webview| {
+            let label = webview.label().to_string();
+            println!("Configuring autoplay for window: {}", label);
+            if let Err(e) = webview.with_webview(move |pw| apply_autoplay_config(pw, &label)) {
+                eprintln!("Failed to configure autoplay: {}", e);
+            }
         })
         .build()
 }
@@ -28,137 +32,63 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 /// created windows.
 pub fn configure_autoplay_for_window<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) {
     let label = window.label().to_string();
-    let closure_label = label.clone();
     let err_label = label.clone();
-    match window.with_webview(move |webview| {
-        #[cfg(target_os = "macos")]
-        unsafe {
-            let wkwebview = &*(webview.inner() as *mut AnyObject);
-            let config: *mut AnyObject = msg_send![wkwebview, configuration];
-            let _: () = msg_send![&*config, setMediaTypesRequiringUserActionForPlayback: 0_usize];
-            let preferences: *mut AnyObject = msg_send![&*config, preferences];
-            let _: () = msg_send![&*preferences, setJavaScriptCanOpenWindowsAutomatically: true];
-            println!("macOS autoplay configured for window {}", closure_label);
-        }
-
-        #[cfg(target_os = "windows")]
-        unsafe {
-            if let Some(controller) = webview.controller() {
-                if let Ok(core_webview) = controller.CoreWebView2() {
-                    let settings = core_webview.Settings().unwrap();
-                    settings.SetIsScriptEnabled(true).ok();
-                    settings.SetAreDefaultScriptDialogsEnabled(true).ok();
-                    println!("Windows autoplay configured for window {}", closure_label);
-                }
-            }
-        }
-
-        #[cfg(target_os = "linux")]
-        unsafe {
-            let wkwebview = webview.inner() as *mut gtk::Widget;
-            let webview_ptr = &*(wkwebview as *mut webkit2gtk::WebView);
-            webkit2gtk::WebViewExt::set_media_playback_requires_user_gesture(webview_ptr, false);
-            println!("Linux autoplay configured for window {}", closure_label);
-        }
-    }) {
-        Ok(_) => {}
-        Err(e) => eprintln!(
+    if let Err(e) = window.with_webview(move |pw| apply_autoplay_config(pw, &label)) {
+        eprintln!(
             "Failed to configure autoplay for window {}: {}",
             err_label, e
-        ),
+        );
     }
 }
 
-#[cfg(target_os = "windows")]
-fn configure_autoplay<R: Runtime>(window: Webview<R>) {
-    use windows::core::*;
-    use windows::Win32::System::WinRT::*;
+/// Shared platform implementation used by both the plugin callback and the
+/// direct per-window path.
+fn apply_autoplay_config(webview: tauri::webview::PlatformWebview, label: &str) {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        // WKWebView: mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone
+        let wkwebview = &*(webview.inner() as *mut AnyObject);
+        let config: *mut AnyObject = msg_send![wkwebview, configuration];
+        let _: () = msg_send![&*config, setMediaTypesRequiringUserActionForPlayback: 0_usize];
+        let preferences: *mut AnyObject = msg_send![&*config, preferences];
+        let _: () = msg_send![&*preferences, setJavaScriptCanOpenWindowsAutomatically: true];
+        println!("macOS autoplay configured for window {}", label);
+    }
 
-    window
-        .with_webview(|webview| {
-            #[cfg(target_os = "windows")]
-            unsafe {
-                // Access the WebView2 controller
-                if let Some(controller) = webview.controller() {
-                    // Get the CoreWebView2
-                    let core_webview = controller.CoreWebView2().unwrap();
-
-                    // Set additional browser arguments for autoplay
-                    // Note: This needs to be set before WebView2 initialization
-                    // For runtime changes, we need to use Settings
-                    let settings = core_webview.Settings().unwrap();
-
-                    // Enable all media autoplay
-                    settings.SetIsScriptEnabled(true).ok();
-                    settings.SetAreDefaultScriptDialogsEnabled(true).ok();
-
-                    println!("Windows autoplay configuration applied");
-                }
+    #[cfg(target_os = "windows")]
+    unsafe {
+        // WebView2 exposes no runtime autoplay switch; the autoplay policy is set
+        // via --autoplay-policy in additionalBrowserArguments (see the
+        // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS env var set in lib.rs::run).
+        // Here we only make sure scripting is enabled.
+        if let Ok(core_webview) = webview.controller().CoreWebView2() {
+            if let Ok(settings) = core_webview.Settings() {
+                let _ = settings.SetIsScriptEnabled(true);
+                let _ = settings.SetAreDefaultScriptDialogsEnabled(true);
+                println!("Windows autoplay configured for window {}", label);
             }
-        })
-        .ok();
-}
+        }
+    }
 
-#[cfg(target_os = "macos")]
-fn configure_autoplay<R: Runtime>(window: Webview<R>) {
-    window
-        .with_webview(|webview| {
-            #[allow(unused_unsafe)]
-            unsafe {
-                // Get the WKWebView
-                let wkwebview = &*(webview.inner() as *mut AnyObject);
+    #[cfg(target_os = "linux")]
+    {
+        use webkit2gtk::{SettingsExt, WebViewExt};
 
-                // Get the configuration
-                let config: *mut AnyObject = msg_send![wkwebview, configuration];
+        let wv = webview.inner();
+        if let Some(settings) = wv.settings() {
+            settings.set_media_playback_requires_user_gesture(false);
+            settings.set_enable_media_stream(true);
+            settings.set_enable_mediasource(true);
+            settings.set_javascript_can_open_windows_automatically(true);
+            println!("Linux autoplay configured for window {}", label);
+        }
+    }
 
-                // Set mediaTypesRequiringUserActionForPlayback to WKAudiovisualMediaTypeNone (0)
-                // This allows autoplay for both audio and video without user interaction
-                let _: () = msg_send![&*config, setMediaTypesRequiringUserActionForPlayback: 0_usize];
-
-                // Also disable other restrictions
-                let preferences: *mut AnyObject = msg_send![&*config, preferences];
-                let _: () = msg_send![&*preferences, setJavaScriptCanOpenWindowsAutomatically: true];
-
-                println!("macOS autoplay configuration applied");
-            }
-        })
-        .ok();
-}
-
-#[cfg(target_os = "linux")]
-fn configure_autoplay<R: Runtime>(window: Webview<R>) {
-    use webkit2gtk::SettingsExt;
-    use webkit2gtk::WebViewExt;
-
-    window
-        .with_webview(|webview| {
-            // Get the WebKitWebView
-            let wkwebview = webview.inner() as *mut gtk::Widget;
-
-            unsafe {
-                use glib::translate::ToGlibPtr;
-                let webview = &*(wkwebview as *mut webkit2gtk::WebView);
-
-                // Get settings
-                if let Some(settings) = webview.settings() {
-                    // Enable autoplay for media
-                    settings.set_enable_media_stream(true);
-                    settings.set_enable_mediasource(true);
-
-                    // Allow media playback without user gesture
-                    settings.set_property("media-playback-requires-user-gesture", &false);
-
-                    println!("Linux autoplay configuration applied");
-                }
-            }
-        })
-        .ok();
-}
-
-// For unsupported platforms
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-fn configure_autoplay<R: Runtime>(_window: Webview<R>) {
-    eprintln!("Autoplay configuration not supported on this platform");
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (webview, label);
+        eprintln!("Autoplay configuration not supported on this platform");
+    }
 }
 
 /// Stop all loading and media playback in a webview using platform-native APIs.
@@ -166,9 +96,9 @@ fn configure_autoplay<R: Runtime>(_window: Webview<R>) {
 /// This uses a layered approach because WebKit's audio pipeline is notoriously
 /// hard to kill on macOS — a single method is never enough:
 ///
-/// Layer 1: JavaScript pauseAllMedia() — directly pauses HTML5 media elements
-///          and closes Web Audio contexts from within the page
-/// Layer 2: [WKWebView stopLoading] — stops WebKit's network/rendering pipeline
+/// Layer 1: JavaScript mute+pause — directly silences HTML5 media elements
+///          from within the page
+/// Layer 2: platform-native stop — stops the webview's network/rendering pipeline
 ///
 /// The JS layer handles what stopLoading can't (already-buffered audio),
 /// and stopLoading handles what JS can't (background WebKit processes).
@@ -193,58 +123,45 @@ pub fn stop_webview<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) {
         Err(e) => println!("Warning: JS pause failed for {}: {}", label, e),
     }
 
-    // Layer 2: Platform-native stop — kills WebKit's loading/rendering pipeline.
-    // After JS has paused the media elements, this ensures WebKit doesn't
-    // continue any background processing.
+    // Layer 2: Platform-native stop — kills the webview's loading/rendering pipeline.
+    let err_label = label.clone();
+    if let Err(e) = window.with_webview(move |pw| stop_platform_webview(pw, &label)) {
+        eprintln!("Failed to stop webview {}: {}", err_label, e);
+    }
+}
+
+fn stop_platform_webview(webview: tauri::webview::PlatformWebview, label: &str) {
     #[cfg(target_os = "macos")]
-    {
-        let closure_label = label.clone();
-        let err_label = label.clone();
-        match window.with_webview(move |webview| unsafe {
-            let wkwebview = &*(webview.inner() as *mut AnyObject);
-            let _: () = msg_send![wkwebview, stopLoading];
-            println!("macOS: Called [WKWebView stopLoading] on {}", closure_label);
-        }) {
-            Ok(_) => {}
-            Err(e) => eprintln!("Failed to stop webview {}: {}", err_label, e),
-        }
+    unsafe {
+        let wkwebview = &*(webview.inner() as *mut AnyObject);
+        let _: () = msg_send![wkwebview, stopLoading];
+        println!("macOS: Called [WKWebView stopLoading] on {}", label);
     }
 
     #[cfg(target_os = "windows")]
-    {
-        let closure_label = label.clone();
-        let err_label = label.clone();
-        match window.with_webview(move |webview| unsafe {
-            if let Some(controller) = webview.controller() {
-                if let Ok(core_webview) = controller.CoreWebView2() {
-                    let _ = core_webview.Stop();
-                    println!("Windows: Called CoreWebView2.Stop() on {}", closure_label);
-                }
-            }
-        }) {
-            Ok(_) => {}
-            Err(e) => eprintln!("Failed to stop webview {}: {}", err_label, e),
+    unsafe {
+        if let Ok(core_webview) = webview.controller().CoreWebView2() {
+            let _ = core_webview.Stop();
+            println!("Windows: Called CoreWebView2.Stop() on {}", label);
         }
     }
 
     #[cfg(target_os = "linux")]
     {
-        let closure_label = label.clone();
-        let err_label = label.clone();
-        match window.with_webview(move |webview| unsafe {
-            let wkwebview = webview.inner() as *mut gtk::Widget;
-            let webview_ptr = &*(wkwebview as *mut webkit2gtk::WebView);
-            webkit2gtk::WebViewExt::load_blank(webview_ptr);
-            println!("Linux: Loaded blank in {}", closure_label);
-        }) {
-            Ok(_) => {}
-            Err(e) => eprintln!("Failed to stop webview {}: {}", err_label, e),
-        }
+        use webkit2gtk::WebViewExt;
+
+        let wv = webview.inner();
+        wv.stop_loading();
+        wv.load_uri("about:blank");
+        println!(
+            "Linux: Stopped loading and navigated {} to about:blank",
+            label
+        );
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
-        let _ = label; // suppress unused warning
+        let _ = (webview, label);
         eprintln!("stop_webview not supported on this platform");
     }
 }

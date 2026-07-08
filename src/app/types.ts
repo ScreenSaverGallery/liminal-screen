@@ -12,4 +12,10 @@ export interface AppOptions {
   debug: boolean;
   customOptions: Record<string, string | number | boolean>;
   instanceId: string;
+  /** Notification feed URL — env only, empty = disabled */
+  notificationUrl: string;
+  /** Notification poll interval in seconds — env only */
+  notificationCheckIntervalSecs: number;
+  /** User consent for notifications — persisted, opt-in (default false) */
+  notificationsEnabled: boolean;
 }

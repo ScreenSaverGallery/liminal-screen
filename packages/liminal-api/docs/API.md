@@ -66,6 +66,12 @@ interface MandatoryOptions {
   runOnBattery: boolean;
   /** Enable debug mode (loads saverUrlDebug instead of saverUrl) */
   debug: boolean;
+  /**
+   * User consent for feed notifications — opt-in, defaults to false.
+   * Optional in payloads: setOptions() merges with current options, so
+   * omitting it leaves the user's consent unchanged.
+   */
+  notificationsEnabled?: boolean;
 }
 ```
 
@@ -168,6 +174,27 @@ const unsub = liminalAPI.onOptionsUpdate((options) => {
 });
 // Later: unsub();
 ```
+
+### `checkForUpdates(): Promise<UpdateInfo | null>`
+
+Check for an application update. Returns `{ version, notes? }` when an update
+is available, `null` otherwise (or outside Tauri). Also causes the backend to
+emit `update-available` / `update-not-available` events.
+
+```ts
+const update = await liminalAPI.checkForUpdates();
+if (update) console.log(`v${update.version} available`);
+```
+
+### `installUpdate(): Promise<void>`
+
+Download and install a pending update. The backend emits
+`update-download-progress` events while downloading, then restarts the app.
+
+### `onUpdateAvailable(callback: (info: UpdateInfo) => void): () => void`
+
+Subscribe to `update-available` events (fired by both the startup check and
+manual checks). Returns an unsubscribe function. No-op outside Tauri.
 
 ### `destroy(): void`
 
