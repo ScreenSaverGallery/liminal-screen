@@ -2,6 +2,7 @@
 - [ ] bug: saver id null
 - [ ] liminal screen icon
 - [ ] win + linux
+- [ ] linux speech synthesis workaround, see: .hermes/plans/linux-speech-synthesis-workaround/PLAN.md
 - [ ] security check, see: .hermes/plans/security/PLAN.md
 - [ ] e2e tests, see: .hermes/plans/testing/PLAN.md Part B (unit tests done)
 - [x] unit tests (Rust: `cargo test` in src-tauri; TS: `bun run test` — see .hermes/plans/testing/)
