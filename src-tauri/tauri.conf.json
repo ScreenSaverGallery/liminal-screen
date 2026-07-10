@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ScreenSaverGallery",
+  "productName": "Liminal Screen",
   "version": "0.1.0",
   "identifier": "org.metazoa.tomaszatoo.liminal-screen",
   "build": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "ScreenSaverGallery",
+        "title": "Liminal Screen",
         "width": 400,
         "height": 600,
         "visible": false,
@@ -45,8 +45,8 @@
       "icons/icon.ico"
     ],
     "category": "Entertainment",
-    "shortDescription": "The Ambient Act of Computational Art",
-    "longDescription": "The Ambient Act of Computational Art",
+    "shortDescription": "The Liminal Screen for your Desktop",
+    "longDescription": "The Liminal Screen for your Desktop",
     "createUpdaterArtifacts": true
   },
   "plugins": {
