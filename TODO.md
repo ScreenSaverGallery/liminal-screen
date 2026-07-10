@@ -1,3 +1,5 @@
+- [ ] bug: window.navigation.href returns strange url (https://metazoa.org/ssg/open-call-2026/?mutedfalse&c=65b65fb6-08fd-4c8b-81c9-5e3eaee4469f) | is there a way of how to add params to navigator?
+- [ ] bug: saver id null
 - [ ] liminal screen icon
 - [ ] win + linux
 - [ ] security check, see: .hermes/plans/security/PLAN.md
