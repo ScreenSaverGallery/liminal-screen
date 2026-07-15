@@ -39,9 +39,11 @@ pub fn start_notification_service<R: Runtime>(app: AppHandle<R>) {
 const CONSENT_RECHECK_SECS: u64 = 60;
 
 fn polling_loop<R: Runtime>(app: AppHandle<R>) {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(30))
-        .build();
+    let agent = ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .build(),
+    );
 
     loop {
         let (notification_url, interval_secs, enabled) = {
@@ -103,7 +105,8 @@ fn check_and_notify<R: Runtime>(
     agent: &ureq::Agent,
     url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let feed: Vec<NotificationEntry> = agent.get(url).call()?.into_json()?;
+    let mut response = agent.get(url).call()?;
+    let feed: Vec<NotificationEntry> = response.body_mut().read_json::<Vec<NotificationEntry>>()?;
 
     let store = app.store("options.json")?;
     let shown: HashSet<String> = store
