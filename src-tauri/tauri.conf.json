@@ -15,8 +15,8 @@
       {
         "label": "main",
         "title": "Liminal Screen",
-        "width": 400,
-        "height": 600,
+        "width": 900,
+        "height": 650,
         "visible": false,
         "decorations": true,
         "resizable": true,

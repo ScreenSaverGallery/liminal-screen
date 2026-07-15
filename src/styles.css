@@ -80,7 +80,7 @@ body {
 
 /* App Container */
 .app-container {
-    max-width: 400px;
+    max-width: 800px;
     margin: 0 auto;
     padding: var(--spacing-md);
     min-height: 100vh;
