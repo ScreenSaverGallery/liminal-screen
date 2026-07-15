@@ -45,8 +45,8 @@
       "icons/icon.ico"
     ],
     "category": "Entertainment",
-    "shortDescription": "The Liminal Screen for your Desktop",
-    "longDescription": "The Liminal Screen for your Desktop",
+    "shortDescription": "The Ambient Act of Computation",
+    "longDescription": "The Ambient Act of Computation",
     "createUpdaterArtifacts": true
   },
   "plugins": {
