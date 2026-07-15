@@ -1,0 +1,46 @@
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #050508;
+  color: #fff;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.info {
+  position: fixed;
+  bottom: 2rem;
+  left: 2rem;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.55;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
+}
+
+.info h1 {
+  font-size: 1rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.info p {
+  font-size: 0.75rem;
+  margin-top: 0.25rem;
+  color: #a0a0b0;
+}
