@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Liminal Screen",
+  "productName": "${{ env.VITE_APP_NAME }}",
   "version": "0.1.0",
   "identifier": "org.metazoa.tomaszatoo.liminal-screen",
   "build": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Liminal Screen",
+        "title": "${{ env.VITE_APP_NAME }}",
         "width": 900,
         "height": 650,
         "visible": false,
@@ -45,8 +45,8 @@
       "icons/icon.ico"
     ],
     "category": "Entertainment",
-    "shortDescription": "The Ambient Act of Computation",
-    "longDescription": "The Ambient Act of Computation",
+    "shortDescription": "${{ env.VITE_APP_DESCRIPTION }}",
+    "longDescription": "${{ env.VITE_APP_DESCRIPTION }}",
     "createUpdaterArtifacts": true
   },
   "plugins": {
