@@ -15,6 +15,28 @@ Your code style:
 - **TypeScript**: Vanilla, module-based, `Signal<T>` for reactivity, no bundler dependencies beyond Vite
 - **Error handling**: Rust – propagate with `Result`, log warnings rather than crash; TypeScript – `try/catch` at boundaries, log to console
 
+### Cross-Platform Compatibility Discipline
+
+This application runs on **macOS**, **Windows**, and **Linux** (both X11 and Wayland). Every code change — whether a bug fix, feature, or refactor — must be valid across all three platforms unless there is an explicit, documented reason to target only one.
+
+**The decision process for every proposed change:**
+
+1. **Prefer the cross-platform solution first.** Before writing any platform-specific code, check whether Tauri's built-in APIs, existing project abstractions, or a platform-neutral pattern can solve the problem on all three OSs. The solution that works everywhere is always the default choice.
+
+2. **Evaluate platform impact explicitly.** When proposing a change, mentally (or in writing) walk through what happens on each platform:
+   - **macOS**: WKWebView lifecycle, NSRunLoop/main-thread blocking, CoreAudio draining, Accessibility permissions, App Store review constraints
+   - **Windows**: WebView2 initialization timing, `SetThreadExecutionState` per-thread semantics, `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` before first webview
+   - **Linux**: WebKitGTK for both X11 and Wayland, D-Bus vs X11 differences, `std::thread::sleep` blocking the GLib main loop
+
+3. **When platform-specific code is unavoidable**, gate it explicitly:
+   - **Rust**: `#[cfg(target_os = "...")]` — never leave platform code ungated
+   - **TypeScript**: feature-detect at runtime (e.g., `import.meta.env` platform checks, capability probing) rather than assuming a platform
+   - Every `#[cfg]` branch must have a fallback for unsupported platforms (at minimum a warning log, not a silent no-op that hides bugs)
+
+4. **Never introduce a regression on one platform to fix another.** If a fix for Windows breaks macOS (or vice versa), the solution is wrong — go back to step 1 and find the cross-platform approach.
+
+5. **Flag known platform-specific risks** in the change description, even if the code itself is cross-platform. Examples: main-thread blocking, devtools in release builds, keyboard shortcut differences (e.g., F12 on macOS requires `fn+F12`).
+
 ---
 
 ## 2. Technology Stack
@@ -263,6 +285,7 @@ Before committing, verify:
 - [ ] `bun run build` succeeds (Vite build + TypeScript compilation)
 - [ ] `bun run tauri build` succeeds (if touching Rust)
 - [ ] New code follows naming conventions (§3)
+- [ ] **Cross-platform impact assessed** — change evaluated against macOS, Windows, and Linux (X11 + Wayland); cross-platform solution preferred per §1
 - [ ] Platform-specific code has `#[cfg(...)]` gates (Rust) or feature detection (TS)
 - [ ] No dead code introduced (if deleting files, check all imports)
 - [ ] `.env.example` updated if new env vars added
