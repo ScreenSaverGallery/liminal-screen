@@ -20,7 +20,7 @@
     "noFallthroughCasesInSwitch": true,
 
     /* Types */
-    "types": ["vite/client"],
+    "types": ["vite/client", "bun-types"],
   },
   "include": ["src"],
 }
