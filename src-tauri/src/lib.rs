@@ -434,7 +434,7 @@ fn preview_screensaver<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 
 /// Command to open options window
 #[tauri::command]
-fn open_options(app: AppHandle) -> Result<(), String> {
+async fn open_options(app: AppHandle) -> Result<(), String> {
     open_options_or_fallback(&app)
 }
 
@@ -449,7 +449,7 @@ fn get_options(state: tauri::State<AppState>) -> Result<AppOptions, String> {
 /// Command to create a preview window with navigator.id injected via initialization_script.
 /// Must be created from Rust because the JS WebviewWindow API does not expose initializationScript.
 #[tauri::command]
-fn create_preview_window<R: Runtime>(
+async fn create_preview_window<R: Runtime>(
     app: AppHandle<R>,
     url: String,
     label: String,
