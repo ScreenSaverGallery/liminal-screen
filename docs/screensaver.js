@@ -1,95 +1,102 @@
-
 (function () {
+  'use strict';
+
+  // =========================================================================
+  // Classic starfield — a la Windows 95.
+  // Stars fly outward from the center, growing larger and faster as they
+  // approach the camera. That's it. No input, no frills, just the void.
+  // =========================================================================
+
   const canvas = document.getElementById('stage');
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { alpha: false });
 
-  let width = 0;
-  let height = 0;
-  let particles = [];
-  let hue = 220;
+  const STAR_COUNT = 300;
+  const SPEED = 4;        // forward speed per frame at 60fps
+  const DEPTH = 256;      // z range: 1 (at camera) .. DEPTH (far)
 
-  const PARTICLE_COUNT = 90;
-  const SPEED = 0.4;
+  let width = 0, height = 0, cx = 0, cy = 0;
+  let stars = [];
+
+  function rand(min, max) { return min + Math.random() * (max - min); }
+
+  function spawnStar(initial) {
+    return {
+      x: rand(-width / 2, width / 2),
+      y: rand(-height / 2, height / 2),
+      z: initial ? rand(1, DEPTH) : DEPTH,
+    };
+  }
+
+  function createStars() {
+    stars = [];
+    for (let i = 0; i < STAR_COUNT; i++) stars.push(spawnStar(true));
+  }
 
   function resize() {
     width = window.innerWidth;
     height = window.innerHeight;
     canvas.width = width;
     canvas.height = height;
+    cx = width / 2;
+    cy = height / 2;
   }
 
-  function createParticles() {
-    particles = [];
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
-      particles.push({
-        x: Math.random() * width,
-        y: Math.random() * height,
-        vx: (Math.random() - 0.5) * SPEED,
-        vy: (Math.random() - 0.5) * SPEED,
-        radius: Math.random() * 2 + 1,
-      });
-    }
-  }
+  let lastFrame = 0;
 
-  function draw() {
-    // Fade trail
-    ctx.fillStyle = 'rgba(5, 5, 8, 0.22)';
+  function loop(timeMs) {
+    const dt = Math.min(64, timeMs - lastFrame) / 16.67; // normalize to 60fps
+    lastFrame = timeMs;
+
+    // Clear to deep black.
+    ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, width, height);
 
-    // Slowly shift color
-    hue = (hue + 0.15) % 360;
-    const color = `hsla(${hue}, 70%, 60%, 0.85)`;
-
-    for (const p of particles) {
-      p.x += p.vx;
-      p.y += p.vy;
-
-      if (p.x < 0 || p.x > width) p.vx *= -1;
-      if (p.y < 0 || p.y > height) p.vy *= -1;
-
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.fill();
-    }
-
-    // Connect nearby particles with faint lines
-    ctx.strokeStyle = `hsla(${hue}, 70%, 60%, 0.08)`;
-    ctx.lineWidth = 0.5;
-    for (let i = 0; i < particles.length; i++) {
-      for (let j = i + 1; j < particles.length; j++) {
-        const a = particles[i];
-        const b = particles[j];
-        const dx = a.x - b.x;
-        const dy = a.y - b.y;
-        const dist = Math.hypot(dx, dy);
-        if (dist < 120) {
-          ctx.beginPath();
-          ctx.moveTo(a.x, a.y);
-          ctx.lineTo(b.x, b.y);
-          ctx.stroke();
-        }
+    const dz = SPEED * dt;
+    for (let i = 0; i < stars.length; i++) {
+      const s = stars[i];
+      s.z -= dz;
+      if (s.z <= 1) {
+        s.x = rand(-width / 2, width / 2);
+        s.y = rand(-height / 2, height / 2);
+        s.z = DEPTH;
       }
+
+      const k = 128 / Math.max(s.z, 1);   // perspective scale
+      const px = cx + s.x * k;
+      const py = cy + s.y * k;
+
+      if (px < 0 || px > width || py < 0 || py > height) continue;
+
+      const size = Math.max(0.5, (1 - s.z / DEPTH) * 2.5);
+
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(px - size / 2, py - size / 2, size, size);
     }
 
-    requestAnimationFrame(draw);
+    requestAnimationFrame(loop);
   }
 
   function init() {
     resize();
-    createParticles();
-    draw();
+    createStars();
+    lastFrame = performance.now();
+    requestAnimationFrame(loop);
   }
 
   window.addEventListener('resize', () => {
     resize();
-    createParticles();
+    createStars();
   });
 
-  // Reduce motion preference support
+  // Reduce motion: a single static field of faint stars.
   if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    ctx.fillStyle = '#050508';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    resize();
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = '#fff';
+    for (let i = 0; i < 150; i++) {
+      ctx.fillRect(Math.random() * width, Math.random() * height, 1, 1);
+    }
     return;
   }
 
