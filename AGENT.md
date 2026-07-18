@@ -73,8 +73,6 @@ This application runs on **macOS**, **Windows**, and **Linux** (both X11 and Way
 ├── tsconfig.json                   ← TypeScript config
 ├── vite.config.ts                  ← Vite config
 ├── bun.lock                        ← Bun lockfile
-├── scripts/
-│   └── set-identity.ts             ← Patches tauri.conf.json from .env
 ├── src/                            ← Frontend source (TypeScript)
 │   ├── main.ts                     ← App entry: init, effects, handlers
 │   ├── vite-env.d.ts
@@ -88,7 +86,7 @@ This application runs on **macOS**, **Windows**, and **Linux** (both X11 and Way
 │   └── styles.css
 ├── src-tauri/                      ← Rust backend
 │   ├── Cargo.toml
-│   ├── tauri.conf.json             ← App metadata (auto-patched)
+│   ├── tauri.conf.json             ← App metadata (${{ env.VAR }} templates)
 │   ├── capabilities/
 │   │   └── default.json            ← Tauri v2 permissions
 │   ├── icons/                      ← Generated icons
@@ -305,17 +303,25 @@ Every PR should answer:
 
 ### 7.1 Required Environment
 
-Copy `.env.example` → `.env` and fill in your values. The Rust backend reads these at **build time**:
+Copy `.env.example` → `.env` and fill in your values. The Rust backend reads these at **build time**. Tauri v2's native `${{ env.VAR }}` template syntax substitutes them directly into `tauri.conf.json` at build/dev time — no patching script is needed.
 
 ```bash
 # Identity
 VITE_APP_NAME="Your App Name"
 VITE_APP_DESCRIPTION="Your description"
+VITE_APP_VERSION="1.0.0"
+VITE_APP_IDENTIFIER="com.example.your-app"
 
 # URLs
 VITE_SAVER_URL="https://example.com/saver"
 VITE_SAVER_URL_DEBUG="https://example.com/saver?debug=true"
 VITE_OPTIONS_URL="https://example.com/options"
+
+# Updater
+VITE_UPDATER_PUBKEY="-----BEGIN PUBLIC KEY-----
+...
+-----END PUBLIC KEY-----"
+VITE_UPDATER_ENDPOINT="https://example.com/releases/latest/download/latest.json"
 
 # Defaults (optional)
 VITE_DEFAULT_STARTS_IN=0.5
@@ -325,7 +331,9 @@ VITE_DEFAULT_RUN_ON_BATTERY=false
 VITE_DEFAULT_DEBUG=false
 ```
 
-**Critical:** The bundle `identifier` in `tauri.conf.json` must be unique per fork. The `scripts/set-identity.ts` patches `productName` and descriptions from `.env` but **never touches the identifier** — change that manually for each fork.
+**Critical:** The bundle `identifier` (now `VITE_APP_IDENTIFIER` in `.env`) must be unique per fork — collisions cause shared webview data directories and corrupted state. Only alphanumeric characters, hyphens, and periods are allowed.
+
+**Multi-line env values:** `VITE_UPDATER_PUBKEY` contains a PEM with newlines. Loaders that strip newlines (e.g. `export $(cat .env | xargs)`) will corrupt it — use `set -a; source .env; set +a` or `bun --env-file=.env` instead. The Tauri CLI auto-loads `.env` from the project root and preserves newlines.
 
 ### 7.2 Development Commands
 
@@ -336,8 +344,8 @@ bun install
 # Development (hot reload)
 bun run tauri dev
 
-# Production build
-export $(cat .env | xargs)
+# Production build (preserves multi-line env values like VITE_UPDATER_PUBKEY)
+set -a; source .env; set +a
 bun run tauri build
 
 # Icon generation (after placing app-icon.png)

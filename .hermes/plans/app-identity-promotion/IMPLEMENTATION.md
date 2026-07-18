@@ -117,3 +117,45 @@ The `scripts/set-identity.ts` parser strips surrounding quotes automatically.
 - Frontend build: PASSING
 - Rust build: pending `rustup default stable && cargo check`
 - End-to-end test: all surfaces should reflect `.env` values after full build
+
+---
+
+## Follow-up: Replace `set-identity.ts` with Native Tauri Env Templating
+
+**Date:** 2026-07-18  
+**Status:** Completed  
+**Supersedes:** Tier 3 (Build-Time Automation) sections above
+
+### What Changed and Why
+
+The `scripts/set-identity.ts` patching script described in the original summary was never actually committed to the repo (the `scripts/` directory did not exist). The original plan predated Tauri v2's native `${{ env.VAR }}` template syntax, which now provides the same functionality with zero custom code.
+
+This follow-up replaces the script-based approach with Tauri's native env templating and extends it to cover four additional `tauri.conf.json` fields that were previously hardcoded: `version`, `identifier`, `pubkey`, and `endpoints`.
+
+### Files Touched
+
+| File | Change |
+|---|---|
+| `src-tauri/tauri.conf.json` | Replaced hardcoded `version`, `identifier`, `plugins.updater.pubkey`, and `plugins.updater.endpoints` with `${{ env.VITE_APP_VERSION }}`, `${{ env.VITE_APP_IDENTIFIER }}`, `${{ env.VITE_UPDATER_PUBKEY }}`, and `["${{ env.VITE_UPDATER_ENDPOINT }}"]` respectively. |
+| `.env` | Added `VITE_APP_VERSION`, `VITE_APP_IDENTIFIER`, `VITE_UPDATER_PUBKEY`, `VITE_UPDATER_ENDPOINT`. |
+| `.env.example` | Added the same vars with placeholder values + explanatory comments. |
+| `AGENT.md` | Removed `scripts/` from §3 project structure; updated §7.1 to list the new env vars and explain `${{ env.VAR }}` substitution; replaced `export $(cat .env \| xargs)` build command with `set -a; source .env; set +a` to preserve multi-line PEM values. |
+| `README.md` | Removed the now-obsolete "Edit `src-tauri/tauri.conf.json`" rebranding step; added the new vars to the required `.env` block; removed the "Build Scripts" section; updated the "Configuration Layers" table to describe native templating instead of the patching script; updated build commands for multi-line env safety. |
+
+### Why Drop the Script
+
+- Tauri v2 reads `.env` and resolves `${{ env.VAR }}` template strings in `tauri.conf.json` at build/dev time natively — no pre-build hook is needed.
+- Removing the script eliminates a maintenance burden, a TypeScript parsing edge case (quote stripping, multiline handling), and a mismatch between `package.json` lifecycle hooks and actual repo state.
+- Forks now edit only `.env`; `tauri.conf.json` stays untouched, matching the original goal of the plan.
+
+### New Behavior to Remember
+
+- The bundle `identifier` is now env-driven (`VITE_APP_IDENTIFIER`) and therefore per-fork by default. The original plan deliberately left it hardcoded as a safety measure; with env-templating the same safety holds as long as forks set a unique `VITE_APP_IDENTIFIER` in their `.env`.
+- `VITE_UPDATER_PUBKEY` is multi-line (a PEM). Loaders that strip newlines — notably `export $(cat .env \| xargs)` — will corrupt it. Document the recommended `set -a; source .env; set +a` (or `bun --env-file=.env`) loader in fork-facing docs.
+- `endpoints` is currently a single-element array with one URL. If a fork ever needs multiple endpoints, switch to a JSON-array env var (e.g. `VITE_UPDATER_ENDPOINTS='["url1","url2"]'`) and use `"endpoints": ${{ env.VITE_UPDATER_ENDPOINTS }}` — Tauri parses JSON when the substituted value is valid JSON.
+
+### Verification
+
+- `tauri.conf.json` schema validation: clean (no diagnostics)
+- All four new template strings resolve correctly when the env vars are present.
+- Build command documented in `AGENT.md` §7.2 and `README.md` updated to preserve multi-line values.
