@@ -22,7 +22,6 @@
     "core:window:allow-maximize",
     "core:window:allow-set-fullscreen",
     "core:window:allow-set-decorations",
-    "store:default",
-    "notification:default"
+    "store:default"
   ]
 }

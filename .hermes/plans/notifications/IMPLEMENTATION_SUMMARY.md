@@ -42,3 +42,30 @@ Notifications are now **opt-in**:
   payloads — `setOptions()` merges with current options), required on
   `AppOptions` together with read-only `notificationUrl` /
   `notificationCheckIntervalSecs`.
+
+## Follow-up: dropped tauri-plugin-notification (2026-07-18)
+
+`tauri-plugin-notification` injects a `window.Notification` shim into **every**
+webview via a plugin init script, and that shim unconditionally calls
+`plugin:notification|is_permission_granted` over IPC at page load. In the
+remote saver/preview windows (https origin, no notification capability) this
+produced console errors on every load: "[blocked] requested insecure content
+from ipc://…", "Not allowed to request resource", and an unhandled rejection
+"notification.is_permission_granted not allowed on window preview-…". The
+plugin offers no way to scope the injection per-window.
+
+Since notifications are shown from Rust only (the JS API was never used), the
+plugin was replaced with a direct `notify-rust = "4.11"` dependency — the same
+crate the plugin's desktop backend wraps. `show_notification` replicates the
+plugin's platform handling (macOS `set_application` with the bundle id, or
+Terminal's in dev; Windows AUMID only when installed). `ensure_os_permission`
+was removed — the plugin's desktop permission API was a hardcoded `Granted`
+stub, so nothing real was lost. Removed `.plugin(tauri_plugin_notification::
+init())` from `lib.rs` and `notification:default` from
+`capabilities/default.json`.
+
+No webview gets notification code injected anymore, so the errors are gone in
+all windows; the feed poller keeps working from its background thread
+regardless of which windows exist (including main hidden in the tray).
+Windows-only code verified via scratch-crate `cargo check --target
+x86_64-pc-windows-msvc` (the app itself can't cross-check — `ring`).

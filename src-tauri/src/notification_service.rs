@@ -68,35 +68,11 @@ fn polling_loop<R: Runtime>(app: AppHandle<R>) {
             continue;
         }
 
-        if !ensure_os_permission(&app) {
-            eprintln!("[notifications] OS notification permission denied — skipping poll");
-            std::thread::sleep(std::time::Duration::from_secs(interval_secs.max(60)));
-            continue;
-        }
-
         if let Err(e) = check_and_notify(&app, &agent, &notification_url) {
             eprintln!("[notifications] Poll error: {}", e);
         }
 
         std::thread::sleep(std::time::Duration::from_secs(interval_secs.max(60)));
-    }
-}
-
-/// Check (and if needed request) OS-level notification permission.
-/// On current desktop platforms the plugin always reports Granted; this guard
-/// matters for future plugin versions and keeps the flow correct on platforms
-/// that do prompt.
-fn ensure_os_permission<R: Runtime>(app: &AppHandle<R>) -> bool {
-    use tauri_plugin_notification::{NotificationExt, PermissionState};
-
-    match app.notification().permission_state() {
-        Ok(PermissionState::Granted) => true,
-        Ok(PermissionState::Denied) => false,
-        // Prompt / PromptWithRationale / unknown — ask the OS
-        _ => matches!(
-            app.notification().request_permission(),
-            Ok(PermissionState::Granted)
-        ),
     }
 }
 
@@ -133,9 +109,45 @@ fn check_and_notify<R: Runtime>(
     Ok(())
 }
 
+// notify-rust is used directly instead of tauri-plugin-notification: the
+// plugin injects a `window.Notification` shim into every webview, which fires
+// a blocked (and console-error-spamming) IPC call from the remote saver and
+// preview windows. Notifications here are shown from Rust only, so the JS
+// side isn't needed at all. Platform handling below mirrors the plugin's
+// desktop backend (which also just wraps notify-rust).
+#[cfg_attr(target_os = "linux", allow(unused_variables))]
 pub fn show_notification<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
-    use tauri_plugin_notification::NotificationExt;
-    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+    // macOS notifications are attributed to a bundle identifier; in dev
+    // (unbundled binary) fall back to Terminal's like the plugin did.
+    // set_application only succeeds once per process — later calls error.
+    #[cfg(target_os = "macos")]
+    let _ = notify_rust::set_application(if tauri::is_dev() {
+        "com.apple.Terminal"
+    } else {
+        &app.config().identifier
+    });
+
+    let mut notification = notify_rust::Notification::new();
+    notification.summary(title).body(body).auto_icon();
+
+    // Set the notification's System.AppUserModel.ID only when running the
+    // installed app — the AUMID isn't registered when run from target/.
+    #[cfg(windows)]
+    {
+        use std::path::MAIN_SEPARATOR as SEP;
+        let installed = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|d| d.display().to_string()))
+            .is_some_and(|dir| {
+                !dir.ends_with(&format!("{SEP}target{SEP}debug"))
+                    && !dir.ends_with(&format!("{SEP}target{SEP}release"))
+            });
+        if installed {
+            notification.app_id(&app.config().identifier);
+        }
+    }
+
+    if let Err(e) = notification.show() {
         eprintln!("[notifications] Failed to show notification: {}", e);
     }
 }

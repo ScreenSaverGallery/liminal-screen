@@ -21,7 +21,10 @@ url = "2"
 tauri-plugin-store = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
-tauri-plugin-notification = "2"
+# Direct desktop notifications (no tauri plugin: the notification plugin
+# injects a Notification shim into every webview, which triggers blocked-IPC
+# errors in the remote saver/preview windows; notifications here are Rust-only)
+notify-rust = "4.11"
 tokio = "1"
 dotenv = "0.15"
 uuid = { version = "1", features = ["v4"] }
