@@ -1,0 +1,125 @@
+# Release pipeline — triggered by `bun run tauri:release`, which bumps the
+# version, commits, and pushes a `vX.Y.Z` tag.
+#
+# Builds bundles for macOS (universal), Windows, and Linux, signs the updater
+# artifacts, and publishes everything (installers + latest.json) to a DRAFT
+# GitHub release. Publish the draft manually — the moment it goes live,
+# installed apps see it via releases/latest/download/latest.json.
+#
+# The release env config (URLs, updater pubkey, branding) is intentionally
+# NOT committed. It lives in the RELEASE_ENV secret and is written to `.env`
+# on the runner; VITE_APP_VERSION is then stamped from the tag, so the secret
+# is set once and never goes stale:
+#
+#   gh secret set RELEASE_ENV < .env
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   RELEASE_ENV                        — full contents of the release .env
+#   TAURI_SIGNING_PRIVATE_KEY          — minisign private key matching
+#                                        VITE_UPDATER_PUBKEY in RELEASE_ENV
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — its password (may be empty)
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target universal-apple-darwin
+          - platform: ubuntu-22.04
+            args: ""
+          - platform: windows-latest
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Materialize .env from RELEASE_ENV secret
+        shell: bash
+        env:
+          RELEASE_ENV: ${{ secrets.RELEASE_ENV }}
+        run: |
+          if [ -z "$RELEASE_ENV" ]; then
+            echo "::error::RELEASE_ENV secret is not set. Create it with: gh secret set RELEASE_ENV < .env" >&2
+            exit 1
+          fi
+          printf '%s\n' "$RELEASE_ENV" > .env
+
+          pubkey=$(grep -E '^VITE_UPDATER_PUBKEY=' .env | sed -E 's/^VITE_UPDATER_PUBKEY="?([^"]*)"?$/\1/')
+          if [ -z "$pubkey" ] || [[ "$pubkey" == *" "* ]]; then
+            echo "::error::VITE_UPDATER_PUBKEY in RELEASE_ENV is missing or a placeholder — the updater would be broken." >&2
+            exit 1
+          fi
+
+          # Stamp the version from the tag so the bundle version always equals
+          # the tag, regardless of what the (set-once) secret contains.
+          version="${GITHUB_REF_NAME#v}"
+          if grep -qE '^VITE_APP_VERSION=' .env; then
+            sed -E 's/^VITE_APP_VERSION=.*$/VITE_APP_VERSION="'"$version"'"/' .env > .env.tmp && mv .env.tmp .env
+          else
+            printf 'VITE_APP_VERSION="%s"\n' "$version" >> .env
+          fi
+
+      - name: Verify tag matches package.json version
+        shell: bash
+        run: |
+          version=$(jq -r .version package.json)
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::Tag v${tag} does not match package.json version ${version} — cut releases with \`bun run tauri:release\`." >&2
+            exit 1
+          fi
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libgtk-3-dev \
+            patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Both targets are needed for the macOS universal binary; ignored elsewhere.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install
+
+      - name: Generate Tauri runtime config
+        run: bun run scripts/build-tauri-config.ts
+
+      - name: Build and upload release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Liminal Screen ${{ github.ref_name }}"
+          releaseBody: "See the assets below to download and install this version."
+          releaseDraft: true
+          args: --config src-tauri/.tauri-runtime.conf.json ${{ matrix.args }}
