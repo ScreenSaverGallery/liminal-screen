@@ -166,7 +166,7 @@ Minimal, reactive UI — no framework. Uses a lightweight `Signal` class for sta
 The Rust backend is the engine — it handles all screensaver lifecycle, window management, power monitoring, and persistence.
 
 - `main.rs` — App entry, Tauri plugin registration (store, dialog, opener)
-- `lib.rs` — Core setup: window creation, system tray with dynamic tooltip (from `VITE_APP_NAME`), options CRUD, screensaver engine orchestration, `factory_reset_options` command, `build_init_script` (injects `navigator.id` and `navigator.userAgent` suffix into all remote windows at document-start)
+- `lib.rs` — Core setup: window creation, system tray with dynamic tooltip (from `VITE_APP_NAME`), options CRUD, screensaver engine orchestration, `factory_reset_options` command, `build_init_script` (injects `navigator.id`, a `LiminalScreen/{version} ({appName})` suffix on `navigator.userAgent`/`navigator.appVersion`, and the frozen `navigator.liminalScreen` options snapshot into all remote windows at document-start)
 - `screensaver_engine.rs` — Screensaver state machine: monitors idle time, creates/destroys fullscreen windows on activation/deactivation, manages multi-display layout
 - `display_manager.rs` — Monitor detection and logical coordinate calculation for multi-monitor fullscreen positioning
 - `power_monitor.rs` — Platform-specific idle time detection (macOS IOKit, Windows `GetLastInputInfo`, Linux systemd-inhibit + X11 screensaver queries)

@@ -1,3 +1,4 @@
+- [x] Navigator extension -> id/instanceId + all options from the memory (?)
 - [ ] bug: window.navigation.href returns strange url (https://metazoa.org/ssg/open-call-2026/?mutedfalse&c=65b65fb6-08fd-4c8b-81c9-5e3eaee4469f) | is there a way of how to add params to navigator?
 - [x] bug: saver id null
 - [x] liminal screen icon

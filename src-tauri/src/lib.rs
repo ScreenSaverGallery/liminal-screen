@@ -362,17 +362,29 @@ fn open_options_or_fallback<R: Runtime>(app: &AppHandle<R>) -> Result<(), String
 }
 
 /// Build the initialization script injected at document-start into every remote window.
-/// Sets navigator.id to the instance UUID and appends the app identifier to navigator.userAgent.
-/// Single quotes in app_name are escaped so the JS string literal is valid.
-fn build_init_script(instance_id: &str, app_name: &str) -> String {
+/// Sets navigator.id to the instance UUID, appends the app identifier
+/// (`LiminalScreen/{version} ({app_name})`) to navigator.userAgent and navigator.appVersion,
+/// and exposes the full options snapshot (plus the native `version`) as the frozen
+/// navigator.liminalScreen object. Options are embedded as a JSON object literal, so
+/// serde handles all string escaping.
+fn build_init_script(options: &AppOptions) -> String {
     let version = env!("CARGO_PKG_VERSION");
-    let safe_name = app_name.replace('\\', "\\\\").replace('\'', "\\'");
+    let json = serde_json::to_string(options).unwrap_or_else(|_| "{}".to_string());
+    // U+2028/U+2029 are valid JSON but rejected inside JS source by pre-ES2019 parsers
+    let json = json.replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029");
     format!(
         "(function(){{\
-            try{{Object.defineProperty(navigator,'id',{{value:'{}',writable:false,configurable:false}});}}catch(e){{}}\
-            try{{Object.defineProperty(navigator,'userAgent',{{value:navigator.userAgent+' {} LiminalScreen/{}',writable:false,configurable:false}});}}catch(e){{}}\
+            var o={json};\
+            o.version='{version}';\
+            try{{Object.freeze(o.customOptions);}}catch(e){{}}\
+            var ident=' LiminalScreen/{version} ('+o.appName+')';\
+            try{{Object.defineProperty(navigator,'id',{{value:o.instanceId,writable:false,configurable:false}});}}catch(e){{}}\
+            try{{Object.defineProperty(navigator,'userAgent',{{value:(navigator.userAgent||'')+ident,writable:false,configurable:false}});}}catch(e){{}}\
+            try{{Object.defineProperty(navigator,'appVersion',{{value:(navigator.appVersion||'')+ident,writable:false,configurable:false}});}}catch(e){{}}\
+            try{{Object.defineProperty(navigator,'liminalScreen',{{value:Object.freeze(o),writable:false,configurable:false}});}}catch(e){{}}\
         }})()",
-        instance_id, safe_name, version
+        json = json,
+        version = version
     )
 }
 
@@ -385,15 +397,11 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
         return Ok(());
     }
 
-    // Get app identity + instance UUID from state
-    let (app_name, app_description, instance_id) = {
+    // Snapshot options from state (app identity + instance UUID + everything injected)
+    let options = {
         let state = app.state::<AppState>();
-        let options = state.options.lock().unwrap();
-        (
-            options.app_name.clone(),
-            options.app_description.clone(),
-            options.instance_id.clone(),
-        )
+        let guard = state.options.lock().unwrap();
+        guard.clone()
     };
 
     // Parse URL and append app identity as query params
@@ -402,20 +410,20 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
         .map_err(|e| format!("Failed to parse options URL '{}': {}", options_url, e))?;
     {
         let mut params = url.query_pairs_mut();
-        params.append_pair("appName", &app_name);
-        if !app_description.is_empty() {
-            params.append_pair("appDescription", &app_description);
+        params.append_pair("appName", &options.app_name);
+        if !options.app_description.is_empty() {
+            params.append_pair("appDescription", &options.app_description);
         }
     }
 
-    let options_title = format!("{} Options", app_name);
+    let options_title = format!("{} Options", options.app_name);
     let window = WebviewWindowBuilder::new(app, OPTIONS_LABEL, WebviewUrl::External(url))
         .title(&options_title)
         .inner_size(900.0, 600.0)
         .resizable(true)
         .decorations(true)
         .visible(true)
-        .initialization_script(build_init_script(&instance_id, &app_name))
+        .initialization_script(build_init_script(&options))
         .build()
         .map_err(|e| format!("Failed to create options window: {}", e))?;
 
@@ -458,10 +466,10 @@ async fn create_preview_window<R: Runtime>(
     if app.get_webview_window(&label).is_some() {
         return Ok(());
     }
-    let (instance_id, app_name) = {
+    let options = {
         let state = app.state::<AppState>();
         let guard = state.options.lock().unwrap();
-        (guard.instance_id.clone(), guard.app_name.clone())
+        guard.clone()
     };
     let parsed_url: url::Url = url
         .parse()
@@ -474,7 +482,7 @@ async fn create_preview_window<R: Runtime>(
         .visible(true)
         .always_on_top(false)
         .skip_taskbar(false)
-        .initialization_script(build_init_script(&instance_id, &app_name))
+        .initialization_script(build_init_script(&options))
         // Preview loads the same saver content as saver windows — it needs the
         // same speechSynthesis fallback (no-op where the native API exists)
         .initialization_script(speech::POLYFILL_JS)
@@ -860,15 +868,59 @@ mod tests {
     }
 
     #[test]
-    fn init_script_escapes_single_quotes_and_backslashes() {
-        let script = build_init_script("uuid-123", r"It's \ tricky");
-        assert!(script.contains(r"It\'s \\ tricky"));
+    fn init_script_escapes_quotes_and_backslashes_via_json() {
+        let mut opts = AppOptions::default();
+        opts.app_name = r#"It's "so" \ tricky"#.to_string();
+        opts.instance_id = "uuid-123".to_string();
+        let script = build_init_script(&opts);
+        // serde_json escapes double quotes and backslashes inside the embedded object literal
+        assert!(script.contains(r#"It's \"so\" \\ tricky"#));
         assert!(script.contains("uuid-123"));
     }
 
     #[test]
     fn init_script_contains_version_suffix() {
-        let script = build_init_script("id", "App");
-        assert!(script.contains(&format!("LiminalScreen/{}", env!("CARGO_PKG_VERSION"))));
+        let script = build_init_script(&AppOptions::default());
+        assert!(script.contains(&format!(
+            "' LiminalScreen/{} ('+o.appName+')'",
+            env!("CARGO_PKG_VERSION")
+        )));
+    }
+
+    #[test]
+    fn init_script_extends_user_agent_and_app_version() {
+        let script = build_init_script(&AppOptions::default());
+        assert!(script.contains("Object.defineProperty(navigator,'userAgent'"));
+        assert!(script.contains("Object.defineProperty(navigator,'appVersion'"));
+        assert!(script.contains("(navigator.userAgent||'')+ident"));
+        assert!(script.contains("(navigator.appVersion||'')+ident"));
+    }
+
+    #[test]
+    fn init_script_exposes_full_options_object() {
+        let script = build_init_script(&AppOptions::default());
+        assert!(script.contains("Object.defineProperty(navigator,'liminalScreen'"));
+        // Every AppOptions field must appear in the embedded JSON (camelCase)
+        for key in [
+            "saverUrl",
+            "saverUrlDebug",
+            "optionsUrl",
+            "appName",
+            "appDescription",
+            "startsIn",
+            "displayOffIn",
+            "requirePassIn",
+            "runOnBattery",
+            "debug",
+            "customOptions",
+            "instanceId",
+            "notificationUrl",
+            "notificationCheckIntervalSecs",
+            "notificationsEnabled",
+        ] {
+            assert!(script.contains(&format!("\"{}\"", key)), "missing {}", key);
+        }
+        // Native app version is grafted onto the exposed object
+        assert!(script.contains(&format!("o.version='{}'", env!("CARGO_PKG_VERSION"))));
     }
 }

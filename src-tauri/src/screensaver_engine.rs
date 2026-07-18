@@ -431,10 +431,10 @@ impl ScreensaverEngine {
         }
 
         let url = self.get_saver_url(app)?;
-        let (instance_id, app_name) = {
+        let options = {
             let state = app.state::<super::AppState>();
             let guard = state.options.lock().unwrap();
-            (guard.instance_id.clone(), guard.app_name.clone())
+            guard.clone()
         };
 
         println!(
@@ -458,7 +458,7 @@ impl ScreensaverEngine {
         .skip_taskbar(true)
         .visible(false)
         .focused(true)
-        .initialization_script(super::build_init_script(&instance_id, &app_name))
+        .initialization_script(super::build_init_script(&options))
         // speechSynthesis fallback for WebKitGTK (no-op where the native API exists)
         .initialization_script(super::speech::POLYFILL_JS);
 
