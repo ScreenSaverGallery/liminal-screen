@@ -116,6 +116,54 @@ set -a; source .env; set +a
 bun run tauri:build
 ```
 
+## Releases (CI/CD)
+
+Releases are cut with one command. `bun run tauri:release` bumps the version, commits, tags `vX.Y.Z`, and pushes; the tag triggers `.github/workflows/release.yml`, which builds bundles for **macOS** (universal `.dmg`), **Windows** (`.msi`/`.exe`), and **Linux** (`.deb`/`.rpm`/AppImage), signs the updater artifacts, and publishes everything — including the `latest.json` manifest the auto-updater consumes — to a **draft** GitHub release.
+
+The release config (URLs, updater pubkey, branding) is intentionally **not committed** — CI reads it from the `RELEASE_ENV` repository secret and stamps the version from the tag, so nothing fork-specific is baked into git history.
+
+### One-Time Setup
+
+Requires the [GitHub CLI](https://cli.github.com/) (`gh`) authenticated against your repository.
+
+1. **Generate the updater keypair** and paste the `.pub` file's contents into your local `.env`'s `VITE_UPDATER_PUBKEY`:
+
+   ```bash
+   bun tauri signer generate -w ~/.tauri/liminal-screen.key
+   ```
+
+2. **Upload your `.env` as the release config secret** (CI writes it to `.env` on the runner):
+
+   ```bash
+   gh secret set RELEASE_ENV < .env
+   ```
+
+3. **Upload the updater signing key** (the private half of the keypair from step 1, plus the password you chose when generating it):
+
+   ```bash
+   gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/liminal-screen.key
+   gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+   ```
+
+### Cutting a Release
+
+```bash
+bun run tauri:release          # patch bump (0.1.0 -> 0.1.1)
+bun run tauri:release minor    # 0.1.0 -> 0.2.0
+bun run tauri:release major    # 0.1.0 -> 1.0.0
+bun run tauri:release 1.2.3    # explicit version
+```
+
+The script refuses to run off `main`, on a dirty working tree, behind `origin`, or on an already-existing tag. Watch the build under the repository's **Actions** tab (roughly 15–30 minutes across the three runners).
+
+When the build finishes, **review the draft release and publish it manually**. Publishing is the go-live moment: the updater endpoint points at `releases/latest/download/latest.json`, so every installed app picks up the new version as soon as the release is public.
+
+### Keeping the Config in Sync
+
+- **Version bumps** need no secret changes — CI stamps `VITE_APP_VERSION` from the tag.
+- **URL or branding changes**: update your local `.env`, then re-run `gh secret set RELEASE_ENV < .env`.
+- **Code signing**: builds are not notarized (macOS) or Authenticode-signed (Windows) — users see the usual Gatekeeper/SmartScreen warnings. Apple/Windows certificates can be added to the workflow later without structural changes.
+
 ## Configuration Behavior
 
 ### Persistent Storage
@@ -187,6 +235,7 @@ Reusable SDK for fork developers who host their own remote options page. Works v
 ### Build Scripts (`scripts/`)
 
 - `build-tauri-config.ts` — Reads `.env` and `src-tauri/tauri.conf.json`, then writes a Tauri merge-patch to `src-tauri/.tauri-runtime.conf.json` (gitignored) that overrides `productName`, `version`, `identifier`, the main window `title`, bundle `shortDescription`/`longDescription`, and updater `pubkey`/`endpoints` from env vars. Invoked automatically by the `tauri:dev` / `tauri:build` npm scripts, which pass the generated file to `tauri` via `--config`. Handles multi-line values (PEM keys). Forks never need to edit `tauri.conf.json` — only `.env`.
+- `release.ts` — One-command release (`bun run tauri:release [patch|minor|major|x.y.z]`): verifies the tree is clean and `main` is current, bumps the version in `package.json` and the local `.env`, commits, tags `vX.Y.Z`, and pushes. The tag triggers the CI release pipeline — see [Releases (CI/CD)](#releases-cicd).
 
 ### Configuration Layers
 
