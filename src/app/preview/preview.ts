@@ -22,14 +22,21 @@ export class Preview {
     if (!win) throw new Error(`Preview window created but reference not found: ${this.label}`);
     this.webviewWindow = win;
 
-    this.webviewWindow.onCloseRequested(async () => {
+    this.webviewWindow.onCloseRequested(async (event) => {
+      // Take over the close: without preventDefault the API auto-destroys the
+      // window after this handler, racing the teardown in hide()
+      event.preventDefault();
       await this.hide();
       onClose?.();
     });
   }
 
   async hide(): Promise<void> {
-    if (!this.webviewWindow) return;
+    // Claim the reference up front so a concurrent hide() (close-requested
+    // re-entry) is a no-op instead of dereferencing null after the sleep
+    const win = this.webviewWindow;
+    if (!win) return;
+    this.webviewWindow = null;
 
     try {
       await invoke("navigate_webview", { label: this.label, url: "about:blank" });
@@ -37,13 +44,11 @@ export class Preview {
 
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    try { await this.webviewWindow.hide(); } catch { /* ignore */ }
+    try { await win.hide(); } catch { /* ignore */ }
 
-    try {
-      await this.webviewWindow.close();
-    } finally {
-      this.webviewWindow = null;
-    }
+    // destroy() (not close()) — close() emits another close-requested event,
+    // re-entering the onCloseRequested handler; destroy tears down directly
+    try { await win.destroy(); } catch { /* ignore */ }
   }
 
   isOpen(): boolean { return this.webviewWindow !== null; }
