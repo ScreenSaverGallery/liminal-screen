@@ -52,7 +52,7 @@
   "plugins": {
     "updater": {
       "pubkey": "SET_VITE_UPDATER_PUBKEY_IN_.env",
-      "endpoints": ["https://example.invalid/"],
+      "endpoints": ["SET_VITE_UPDATER_ENDPOINT_IN_.env"],
       "windows": {
         "installMode": "passive"
       }
