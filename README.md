@@ -7,6 +7,7 @@ A cross-platform screensaver application built with Tauri v2 that runs in the sy
 - **Multi-monitor support** - Displays on all monitors with proper fullscreen handling
 - **Autoplay media** - Supports video/audio content without user interaction
 - **System tray integration** - Runs silently in the background
+- **Start at login** - Registers as an OS login item on first install (opt-out via the options window)
 - **Configurable timing** - Customize activation delay, display off timing, and more
 - **Remote options** - Load custom configuration from a web-based form
 - **Cross-platform** - Works on macOS, Windows, and Linux
@@ -77,7 +78,10 @@ VITE_DEFAULT_DISPLAY_OFF_IN=2     # Minutes before display off
 VITE_DEFAULT_REQUIRE_PASS_IN=0    # Minutes until password required (0 = none)
 VITE_DEFAULT_RUN_ON_BATTERY=false # Run on battery power?
 VITE_DEFAULT_DEBUG=false          # Enable debug mode?
+VITE_DEFAULT_AUTOSTART=true       # Register as OS login item on first install?
 ```
+
+> **Autostart:** the OS login item — not `options.json` — is the source of truth for "Start at Login". The `VITE_DEFAULT_AUTOSTART` default applies **once**, on first install (release builds only; `tauri dev` never auto-registers the debug binary). Afterwards users toggle it in the options window, and changes made directly in System Settings are picked up on the next launch.
 
 ### 4. Replace the App Icon
 

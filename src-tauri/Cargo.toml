@@ -29,6 +29,7 @@ tokio = "1"
 dotenv = "0.15"
 uuid = { version = "1", features = ["v4"] }
 ureq = { version = "3", features = ["json"] }
+tauri-plugin-autostart = "2.5.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = [

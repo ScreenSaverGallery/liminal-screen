@@ -48,6 +48,7 @@ let startsInInput: HTMLInputElement | null = null;
 let displayOffInput: HTMLInputElement | null = null;
 let requirePassInInput: HTMLInputElement | null = null;
 let runOnBatteryInput: HTMLInputElement | null = null;
+let autostartInput: HTMLInputElement | null = null;
 let debugInput: HTMLInputElement | null = null;
 let notificationsEnabledInput: HTMLInputElement | null = null;
 let notificationsItem: HTMLElement | null = null;
@@ -169,6 +170,9 @@ function cacheUIElements(): void {
   runOnBatteryInput = document.getElementById(
     "run-on-battery",
   ) as HTMLInputElement | null;
+  autostartInput = document.getElementById(
+    "autostart",
+  ) as HTMLInputElement | null;
   debugInput = document.getElementById("debug-mode") as HTMLInputElement | null;
   notificationsEnabledInput = document.getElementById(
     "notifications-enabled",
@@ -181,6 +185,7 @@ function cacheUIElements(): void {
     displayOffInput,
     requirePassInInput,
     runOnBatteryInput,
+    autostartInput,
     debugInput,
     notificationsEnabledInput,
   ].forEach((el) => el?.addEventListener("change", () => saveOptions(true)));
@@ -267,6 +272,9 @@ async function saveOptions(silent = false): Promise<void> {
   const runOnBattery = runOnBatteryInput
     ? runOnBatteryInput.checked
     : current.runOnBattery;
+  const autostart = autostartInput
+    ? autostartInput.checked
+    : current.autostart;
   const debug = debugInput ? debugInput.checked : current.debug;
   const notificationsEnabled = notificationsEnabledInput
     ? notificationsEnabledInput.checked
@@ -305,6 +313,7 @@ async function saveOptions(silent = false): Promise<void> {
         displayOffIn,
         requirePassIn,
         runOnBattery,
+        autostart,
         debug,
         notificationsEnabled,
       },
@@ -382,6 +391,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (requirePassInInput)
       requirePassInInput.value = String(opts.requirePassIn);
     if (runOnBatteryInput) runOnBatteryInput.checked = opts.runOnBattery;
+    if (autostartInput) autostartInput.checked = opts.autostart;
     if (debugInput) debugInput.checked = opts.debug;
     if (notificationsEnabledInput)
       notificationsEnabledInput.checked = opts.notificationsEnabled;

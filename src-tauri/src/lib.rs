@@ -144,6 +144,12 @@ pub struct AppOptions {
     // No notification is ever shown while this is false.
     #[serde(default)]
     pub notifications_enabled: bool,
+    // Start at login — mirrors the OS login-item state, which is the source
+    // of truth (never persisted to options.json). Synced from the OS at
+    // startup and after every set_options/factory_reset. The env default
+    // only applies on first install.
+    #[serde(default)]
+    pub autostart: bool,
 }
 
 fn default_notification_interval() -> u64 {
@@ -185,6 +191,11 @@ impl Default for AppOptions {
             notifications_enabled: env_setting!("VITE_DEFAULT_NOTIFICATIONS_ENABLED")
                 .map(|s| s == "true")
                 .unwrap_or(false),
+            // Screensaver apps live in the tray — start at login unless the
+            // fork opts out. Applied on first install only (see setup_app).
+            autostart: env_setting!("VITE_DEFAULT_AUTOSTART")
+                .map(|s| s == "true")
+                .unwrap_or(true),
         }
     }
 }
@@ -192,7 +203,7 @@ impl Default for AppOptions {
 /// Initialize the application
 fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
     // Load persisted options from store, falling back to env var defaults
-    let options = load_persisted_options(app).unwrap_or_else(|e| {
+    let mut options = load_persisted_options(app).unwrap_or_else(|e| {
         eprintln!(
             "[store] Warning: Could not load persisted options, using defaults: {}",
             e
@@ -201,11 +212,29 @@ fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::err
     });
 
     // Persist instanceId on first run (default() generated a new one; save it so it survives restarts)
+    let mut first_run = false;
     if let Ok(store) = app.store("options.json") {
         if store.get("instanceId").is_none() {
+            first_run = true;
             store.set("instanceId", options.instance_id.clone());
             let _ = store.save();
         }
+    }
+
+    // Start-at-login: apply the env default on first install only, then adopt
+    // whatever the OS reports — the login item is the source of truth, so
+    // changes made in System Settings are picked up here on every launch.
+    // Dev builds never auto-register (that would install the debug binary as
+    // a login item), but the options-window toggle still works there.
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let autolaunch = app.autolaunch();
+        if first_run && options.autostart && !cfg!(debug_assertions) {
+            if let Err(e) = autolaunch.enable() {
+                eprintln!("[autostart] Warning: could not enable start at login: {e}");
+            }
+        }
+        options.autostart = autolaunch.is_enabled().unwrap_or(false);
     }
 
     // Initialize app state with loaded options
@@ -497,7 +526,12 @@ fn factory_reset_options<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<AppState>,
 ) -> Result<AppOptions, String> {
-    let default_options = AppOptions::default();
+    let mut default_options = AppOptions::default();
+
+    // Reset start-at-login to the env default (dev builds never auto-enable,
+    // matching first-install behavior in setup_app).
+    default_options.autostart =
+        apply_autostart(&app, default_options.autostart && !cfg!(debug_assertions));
 
     let store = app
         .store("options.json")
@@ -515,6 +549,26 @@ fn factory_reset_options<R: Runtime>(
     let _ = app.emit("reset-options", ());
     let _ = app.emit("options-updated", default_options.clone());
     Ok(default_options)
+}
+
+/// Enable/disable the OS login item to match `desired`, returning the actual
+/// state afterwards. Failures are logged, not fatal — the returned value always
+/// reflects what the OS reports, so callers stay truthful to reality.
+fn apply_autostart<R: Runtime>(app: &AppHandle<R>, desired: bool) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    let autolaunch = app.autolaunch();
+    let current = autolaunch.is_enabled().unwrap_or(false);
+    if desired != current {
+        let result = if desired {
+            autolaunch.enable()
+        } else {
+            autolaunch.disable()
+        };
+        if let Err(e) = result {
+            eprintln!("[autostart] Warning: could not update start at login: {e}");
+        }
+    }
+    autolaunch.is_enabled().unwrap_or(false)
 }
 
 fn validate_options(options: &AppOptions) -> Result<(), String> {
@@ -547,7 +601,7 @@ fn set_options<R: Runtime>(
     };
 
     // Preserve identity fields — these are fork-controlled via .env, never user-settable
-    let new_options = {
+    let mut new_options = {
         let current = state.options.lock().unwrap();
         AppOptions {
             saver_url: current.saver_url.clone(),
@@ -562,6 +616,12 @@ fn set_options<R: Runtime>(
             ..options
         }
     };
+
+    // Apply start-at-login to the OS login item (its persistence layer — not
+    // options.json). Non-fatal on failure so the other settings still save;
+    // reading the state back makes the UI reflect what actually happened.
+    new_options.autostart = apply_autostart(&app, new_options.autostart);
+
     *state.options.lock().unwrap() = new_options.clone();
 
     let store = app
@@ -722,6 +782,10 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
@@ -917,6 +981,7 @@ mod tests {
             "notificationUrl",
             "notificationCheckIntervalSecs",
             "notificationsEnabled",
+            "autostart",
         ] {
             assert!(script.contains(&format!("\"{}\"", key)), "missing {}", key);
         }

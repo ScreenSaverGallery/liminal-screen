@@ -18,6 +18,8 @@ export interface AppOptions {
   notificationCheckIntervalSecs: number;
   /** User consent for notifications — persisted, opt-in (default false) */
   notificationsEnabled: boolean;
+  /** Start at login — mirrors the OS login-item state (not options.json) */
+  autostart: boolean;
 }
 
 /**
