@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "${{ env.VITE_APP_NAME }}",
-  "version": "0.1.0",
-  "identifier": "org.metazoa.tomaszatoo.liminal-screen",
+  "version": "${{ env.VITE_APP_VERSION }}",
+  "identifier": "${{ env.VITE_APP_IDENTIFIER }}",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
@@ -51,10 +51,8 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "CONTENT FROM PUBLICKEY.PEM",
-      "endpoints": [
-        "https://github.com/screensavergallery/liminal-screen/releases/latest/download/latest.json"
-      ],
+      "pubkey": "${{ env.VITE_UPDATER_PUBKEY }}",
+      "endpoints": ["${{ env.VITE_UPDATER_ENDPOINT }}"],
       "windows": {
         "installMode": "passive"
       }

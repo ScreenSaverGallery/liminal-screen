@@ -29,6 +29,8 @@ cp .env.example .env
 # App Identity
 VITE_APP_NAME="Your App Name"
 VITE_APP_DESCRIPTION="Your app description here"
+VITE_APP_VERSION="1.0.0"                              # semver
+VITE_APP_IDENTIFIER="com.yourcompany.your-app-name"  # MUST be unique per fork
 
 # Screensaver URLs
 VITE_SAVER_URL="https://your-domain.com/screensaver"
@@ -36,17 +38,30 @@ VITE_SAVER_URL_DEBUG="https://your-domain.com/screensaver?debug=true"
 
 # Remote Options (optional)
 VITE_OPTIONS_URL="https://your-domain.com/options.html"
+
+# Updater (REQUIRED if using the Tauri updater plugin)
+VITE_UPDATER_PUBKEY="-----BEGIN PUBLIC KEY-----
+ paste your public key here
+-----END PUBLIC KEY-----"
+VITE_UPDATER_ENDPOINT="https://your-domain.com/releases/latest/download/latest.json"
 ```
 
-**Important:** The Rust backend reads these environment variables at **build time**. Make sure `.env` is sourced before building, or export them explicitly:
+**Important:** These values are read at **build time** and substituted into `tauri.conf.json` via Tauri v2's native `${{ env.VAR }}` template syntax — no patching script is needed. `tauri.conf.json` itself never needs to be edited by forks.
+
+**Loading `.env`:** The Tauri CLI auto-loads `.env` from the project root. For production builds outside the CLI (e.g. CI), use a loader that preserves newlines — `VITE_UPDATER_PUBKEY` is multi-line:
 
 ```bash
-# Option 1: Export before building
-export $(cat .env | xargs)
+# Preferred (preserves multi-line values)
+set -a; source .env; set +a
 bun run tauri build
 
-# Option 2: Use direnv or similar tool to auto-load .env
+# Or via Bun's built-in env loader
+bun --env-file=.env run tauri build
 ```
+
+> Avoid `export $(cat .env | xargs)` — it breaks on multi-line values like the updater PEM.
+
+**Why bundle identifier matters:** If two apps have the same identifier on one system, they'll share preferences, keychain entries, and may crash each other. Each fork MUST use a unique `VITE_APP_IDENTIFIER`.
 
 **Optional: Customize default timing values:**
 
@@ -58,7 +73,7 @@ VITE_DEFAULT_RUN_ON_BATTERY=false # Run on battery power?
 VITE_DEFAULT_DEBUG=false          # Enable debug mode?
 ```
 
-### 3. Replace the App Icon
+### 4. Replace the App Icon
 
   Note: This will be improved in future, as generating the icon set will become part of the build process.
 
@@ -69,30 +84,6 @@ bun tauri icon
 ```
 
 This generates all platform icon files in `src-tauri/icons/` (macOS `.icns`, Windows `.ico`, iOS, Android, and all PNG sizes). See [Tauri Icons docs](https://v2.tauri.app/develop/icons/) for details.
-
-### 4. Edit `src-tauri/tauri.conf.json`
-
-**Critical: Change the bundle identifier to avoid conflicts with other forks:**
-
-```json
-{
-  "productName": "Your App Name",
-  "identifier": "com.yourcompany.your-app-name",
-  "app": {
-    "windows": [
-      {
-        "title": "Your App Name"
-      }
-    ]
-  },
-  "bundle": {
-    "shortDescription": "Your app description",
-    "longDescription": "Full description of your screensaver application"
-  }
-}
-```
-
-**Why bundle identifier matters:** If two apps have the same identifier on one system, they'll share preferences, keychain entries, and may crash each other. Each fork MUST use a unique identifier.
 
 ### 5. Edit `package.json` (Optional)
 
@@ -111,8 +102,8 @@ Update the package name for your fork:
 # Install dependencies
 bun install
 
-# Build for production (make sure .env is loaded first!)
-export $(cat .env | xargs)
+# Build for production (preserves multi-line env values like VITE_UPDATER_PUBKEY)
+set -a; source .env; set +a
 bun run tauri build
 ```
 
@@ -144,8 +135,9 @@ Factory reset does two things:
 # Development mode
 `bun run tauri dev`
 
-# Production build
-`bun run tauri build`
+# Production build (preserves multi-line env values like VITE_UPDATER_PUBKEY)
+set -a; source .env; set +a
+bun run tauri build
 
 ## Architecture
 
@@ -183,15 +175,11 @@ Reusable SDK for fork developers who host their own remote options page. Works v
 - `src/types.ts` — `AppOptions`, `SetOptionsPayload`, `CustomOptions` types
 - `examples/remote-options/` — Reference options page (HTML + JS + service worker) ready to deploy
 
-### Build Scripts (`scripts/`)
-
-- `set-identity.ts` — Reads `.env` and patches `tauri.conf.json` with `VITE_APP_NAME` (productName, window title) and `VITE_APP_DESCRIPTION`. Runs automatically via `predev`/`prebuild` lifecycle hooks. Never touches the bundle `identifier`.
-
 ### Configuration Layers
 
 | Layer | File | Purpose |
 |-------|------|---------|
-| Build-time identity | `tauri.conf.json` | App name, bundle ID, metadata — auto-patched from `.env` by `set-identity.ts` |
+| Build-time identity | `tauri.conf.json` | App name, version, bundle ID, descriptions, updater config — uses Tauri's `${{ env.VAR }}` template syntax, substituted from `.env` at build/dev time |
 | Runtime identity | `.env` | `VITE_APP_NAME`, `VITE_APP_DESCRIPTION` — read by Rust backend and forwarded to frontend via `AppOptions` |
 | Runtime URLs | `.env` | `VITE_SAVER_URL`, `VITE_SAVER_URL_DEBUG`, `VITE_OPTIONS_URL` |
 | Runtime defaults | `.env` | `VITE_DEFAULT_STARTS_IN`, etc. — fallback values for first install |
