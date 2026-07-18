@@ -120,7 +120,7 @@ The `scripts/set-identity.ts` parser strips surrounding quotes automatically.
 
 ---
 
-## Follow-up: Replace `set-identity.ts` with Native Tauri Env Templating
+## Follow-up: Replace `set-identity.ts` with a Tauri Merge-Patch Build Script
 
 **Date:** 2026-07-18  
 **Status:** Completed  
@@ -128,34 +128,68 @@ The `scripts/set-identity.ts` parser strips surrounding quotes automatically.
 
 ### What Changed and Why
 
-The `scripts/set-identity.ts` patching script described in the original summary was never actually committed to the repo (the `scripts/` directory did not exist). The original plan predated Tauri v2's native `${{ env.VAR }}` template syntax, which now provides the same functionality with zero custom code.
+The `scripts/set-identity.ts` patching script described in the original summary was never actually committed to the repo (the `scripts/` directory did not exist). The original plan predated an investigation into Tauri v2’s config-parsing behavior.
 
-This follow-up replaces the script-based approach with Tauri's native env templating and extends it to cover four additional `tauri.conf.json` fields that were previously hardcoded: `version`, `identifier`, `pubkey`, and `endpoints`.
+**Key finding:** Tauri v2 does **not** support `${{ env.VAR }}` substitution in `tauri.conf.json`. The CLI’s parser (`tauri-utils::config::parse::parse_value`) is a plain `serde_json::from_str` — it stores `${{ env.X }}` as a literal string. The existing `"productName": "${{ env.VITE_APP_NAME }}"` was therefore being treated as the literal string `${{ env.VITE_APP_NAME }}`; it only “looked” like it worked because `productName` accepts any string matching `^[^/\\:*?"<>|]+$` (which the literal satisfies) and the Rust runtime overrides the displayed name in the tray and window title at runtime via the `dotenv` crate. In a production bundle, `productName` would have been the literal template string — a latent bug.
+
+The same approach cannot work for `version` (must be valid semver), `identifier` (must match reverse-domain pattern), `pubkey`, or `endpoints` — the JSON schema validator runs *before* any hypothetical substitution, so literal template strings fail validation.
+
+The replacement approach uses Tauri’s official `--config` flag, which accepts a path to a JSON file that is merged with the base `tauri.conf.json` using JSON Merge Patch (RFC 7396). A new build script generates that merge-patch from `.env`.
 
 ### Files Touched
 
 | File | Change |
 |---|---|
-| `src-tauri/tauri.conf.json` | Replaced hardcoded `version`, `identifier`, `plugins.updater.pubkey`, and `plugins.updater.endpoints` with `${{ env.VITE_APP_VERSION }}`, `${{ env.VITE_APP_IDENTIFIER }}`, `${{ env.VITE_UPDATER_PUBKEY }}`, and `["${{ env.VITE_UPDATER_ENDPOINT }}"]` respectively. |
+| `scripts/build-tauri-config.ts` | New file. Reads `.env` (with quote-aware, multi-line PEM support) and `src-tauri/tauri.conf.json`, then writes a merge-patch to `src-tauri/.tauri-runtime.conf.json` (gitignored) overriding `productName`, `app.windows[0].title`, `bundle.shortDescription`, `bundle.longDescription`, `version`, `identifier`, `plugins.updater.pubkey`, and `plugins.updater.endpoints`. Only emits keys present and non-empty in `.env`. Idempotent — safe to run on every `tauri` invocation. Falls back to `{}` if `.env` is missing. |
+| `package.json` | Added `tauri:dev` and `tauri:build` scripts that run `scripts/build-tauri-config.ts` first, then invoke `tauri dev --config src-tauri/.tauri-runtime.conf.json` (resp. `tauri build …`). Kept `tauri` plain (`"tauri": "tauri"`) because `--config` is only accepted by the `dev`/`build`/`bundle` subcommands, not `info`/`icon`/etc. |
+| `.gitignore` | Added `src-tauri/.tauri-runtime.conf.json` — generated, never edit by hand, never commit. |
+| `src-tauri/tauri.conf.json` | Replaced per-fork hardcoded values with obvious, schema-valid placeholders (`productName: "SET_VITE_APP_NAME_IN_.env"`, `version: "0.0.0"`, `identifier: "com.example.set-vite-app-identifier-in-env"`, `shortDescription`/`longDescription: "Set VITE_APP_DESCRIPTION in .env"`, `pubkey: "SET_VITE_UPDATER_PUBKEY_IN_.env"`, `endpoints: ["https://example.invalid/"]`, `app.windows[0].title: "SET_VITE_APP_NAME_IN_.env"`). Structural config (build commands, dev URL, window shape, CSP, bundle icons/category, updater install mode) is unchanged. The base config is a valid standalone Tauri config; the merge-patch overrides the placeholders with real values from `.env` whenever the relevant env var is set. |
 | `.env` | Added `VITE_APP_VERSION`, `VITE_APP_IDENTIFIER`, `VITE_UPDATER_PUBKEY`, `VITE_UPDATER_ENDPOINT`. |
 | `.env.example` | Added the same vars with placeholder values + explanatory comments. |
-| `AGENT.md` | Removed `scripts/` from §3 project structure; updated §7.1 to list the new env vars and explain `${{ env.VAR }}` substitution; replaced `export $(cat .env \| xargs)` build command with `set -a; source .env; set +a` to preserve multi-line PEM values. |
-| `README.md` | Removed the now-obsolete "Edit `src-tauri/tauri.conf.json`" rebranding step; added the new vars to the required `.env` block; removed the "Build Scripts" section; updated the "Configuration Layers" table to describe native templating instead of the patching script; updated build commands for multi-line env safety. |
+| `AGENT.md` | Re-added `scripts/` to §3 project structure; updated §7.1 to explain the merge-patch mechanism and Tauri’s lack of native env substitution; updated §7.2 build commands to `tauri:dev` / `tauri:build`. |
+| `README.md` | Updated §2 rebranding instructions to describe the merge-patch mechanism; updated §6 Build section; restored a "Build Scripts" section documenting `build-tauri-config.ts`; updated the "Configuration Layers" table; updated build commands to `tauri:dev` / `tauri:build`. |
 
-### Why Drop the Script
+### Why a Merge-Patch, Not In-Place Patching
 
-- Tauri v2 reads `.env` and resolves `${{ env.VAR }}` template strings in `tauri.conf.json` at build/dev time natively — no pre-build hook is needed.
-- Removing the script eliminates a maintenance burden, a TypeScript parsing edge case (quote stripping, multiline handling), and a mismatch between `package.json` lifecycle hooks and actual repo state.
-- Forks now edit only `.env`; `tauri.conf.json` stays untouched, matching the original goal of the plan.
+The original plan envisioned a script that rewrites `tauri.conf.json` in place (`set-identity.ts`). This was abandoned in favor of the merge-patch approach because:
+
+- `tauri.conf.json` is never mutated, so git state stays clean — no churn, no accidental commits of env-specific values.
+- Uses Tauri’s official, documented `--config` flag (RFC 7396 merge) rather than a custom patching convention.
+- The base `tauri.conf.json` is a valid standalone config — any tool that reads it without the `--config` override still gets sensible defaults.
+- Forks only ever edit `.env`; the same goal as the original plan, achieved with no file mutation.
+
+### Why Placeholders, Not a `_DO_NOT_EDIT` Documentation Field
+
+To make the role of `tauri.conf.json` self-documenting, a `_DO_NOT_EDIT` (or `_comment`) field at the root was considered and rejected after empirical testing.
+
+**Finding:** Tauri’s JSON schema (`https://schema.tauri.app/config/2`, mirrored at `crates/tauri-cli/config.schema.json`) sets `"additionalProperties": false` at the root. The Tauri CLI validates the config against this schema in `load_config` and exits with code 1 on any validation error. Adding `"_DO_NOT_EDIT": "…"` produces:
+
+```
+Error `"tauri.conf.json"` error: Additional properties are not allowed ('_DO_NOT_EDIT' was unexpected)
+error: script "tauri" exited with code 1
+```
+
+Zed’s schema-backed diagnostics flags the same error in-editor.
+
+The replacement: obvious, schema-valid placeholder values for per-fork fields (see the file table above). A fork opening `tauri.conf.json` immediately sees `"productName": "SET_VITE_APP_NAME_IN_.env"` and understands that the real value lives elsewhere. The placeholders are all valid (semver, reverse-domain pattern, productName character class, valid URL for `endpoints`), so the base config parses standalone — only the updater at runtime would fail when the placeholder `https://example.invalid/` is fetched, which is the right failure mode (signals the fork needs to set `VITE_UPDATER_ENDPOINT`).
+
+Switching to `tauri.conf.json5` (which allows `// comments`) would also work but requires adding the `config-json5` Cargo feature to both `tauri-build` and `tauri` in `src-tauri/Cargo.toml`. The placeholder approach avoids that feature flag for what is essentially a documentation concern.
+
+### How to Use
+
+- Development: `bun run tauri:dev` (regenerates the merge-patch from `.env`, then runs `tauri dev --config src-tauri/.tauri-runtime.conf.json`)
+- Production: `set -a; source .env; set +a` (exports env to OS for `option_env!` at compile time), then `bun run tauri:build`
+- Other Tauri subcommands (`info`, `icon`, `signer generate`, …) continue to use the plain `tauri` script: `bun run tauri info`
 
 ### New Behavior to Remember
 
-- The bundle `identifier` is now env-driven (`VITE_APP_IDENTIFIER`) and therefore per-fork by default. The original plan deliberately left it hardcoded as a safety measure; with env-templating the same safety holds as long as forks set a unique `VITE_APP_IDENTIFIER` in their `.env`.
-- `VITE_UPDATER_PUBKEY` is multi-line (a PEM). Loaders that strip newlines — notably `export $(cat .env \| xargs)` — will corrupt it. Document the recommended `set -a; source .env; set +a` (or `bun --env-file=.env`) loader in fork-facing docs.
-- `endpoints` is currently a single-element array with one URL. If a fork ever needs multiple endpoints, switch to a JSON-array env var (e.g. `VITE_UPDATER_ENDPOINTS='["url1","url2"]'`) and use `"endpoints": ${{ env.VITE_UPDATER_ENDPOINTS }}` — Tauri parses JSON when the substituted value is valid JSON.
+- The bundle `identifier` is now env-driven (`VITE_APP_IDENTIFIER`) and therefore per-fork by default. The original plan deliberately left it hardcoded as a safety measure; with the merge-patch approach the same safety holds as long as forks set a unique `VITE_APP_IDENTIFIER` in their `.env`.
+- `VITE_UPDATER_PUBKEY` is multi-line (a PEM). The `build-tauri-config.ts` script parses `.env` directly and handles multi-line quoted values, so the merge-patch is unaffected by the shell loader choice. **But** the Rust backend’s `option_env!` reads from the OS environment at compile time — for production builds, env vars must be exported to the OS with newlines preserved (`set -a; source .env; set +a` or `bun --env-file=.env`). `export $(cat .env | xargs)` will corrupt the PEM.
+- `endpoints` is currently a single-element array with one URL. If a fork ever needs multiple endpoints, the script can be extended to parse a JSON-array env var (e.g. `VITE_UPDATER_ENDPOINTS='["url1","url2"]'`) — RFC 7396 replaces the array wholesale, so no merge semantics issue there.
 
 ### Verification
 
-- `tauri.conf.json` schema validation: clean (no diagnostics)
-- All four new template strings resolve correctly when the env vars are present.
-- Build command documented in `AGENT.md` §7.2 and `README.md` updated to preserve multi-line values.
+- `bun run scripts/build-tauri-config.ts` writes a valid merge-patch with correct overrides for `productName`, `app`, `bundle`, `version`, `identifier`, `plugins`.
+- `bun run tauri:dev` runs `build-tauri-config.ts` first, then `tauri dev --config src-tauri/.tauri-runtime.conf.json` — config parsing succeeds (the previous `tauri.conf.json > version must be a semver string` error is gone).
+- `bun run tauri --version` (plain `tauri` script, no `--config`) still works as expected for subcommands that don’t need the merge-patch.
+- A subsequent `cargo` build error encountered during verification (`failed to read plugin permissions: .../ssg-tauri-liminal/.../app_hide.toml: No such file or directory`) is a stale-cache issue from an old project path — unrelated to this change; `cargo clean` clears it.

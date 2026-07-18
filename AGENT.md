@@ -73,6 +73,8 @@ This application runs on **macOS**, **Windows**, and **Linux** (both X11 and Way
 ├── tsconfig.json                   ← TypeScript config
 ├── vite.config.ts                  ← Vite config
 ├── bun.lock                        ← Bun lockfile
+├── scripts/
+│   └── build-tauri-config.ts        ← Generates src-tauri/.tauri-runtime.conf.json from .env (Tauri merge-patch, gitignored)
 ├── src/                            ← Frontend source (TypeScript)
 │   ├── main.ts                     ← App entry: init, effects, handlers
 │   ├── vite-env.d.ts
@@ -86,7 +88,8 @@ This application runs on **macOS**, **Windows**, and **Linux** (both X11 and Way
 │   └── styles.css
 ├── src-tauri/                      ← Rust backend
 │   ├── Cargo.toml
-│   ├── tauri.conf.json             ← App metadata (${{ env.VAR }} templates)
+│   ├── tauri.conf.json             ← App metadata (structural config + per-fork placeholders; per-fork values come from .env via the merge-patch below)
+│   ├── .tauri-runtime.conf.json   ← Generated merge-patch (gitignored; do not edit)
 │   ├── capabilities/
 │   │   └── default.json            ← Tauri v2 permissions
 │   ├── icons/                      ← Generated icons
@@ -303,7 +306,13 @@ Every PR should answer:
 
 ### 7.1 Required Environment
 
-Copy `.env.example` → `.env` and fill in your values. The Rust backend reads these at **build time**. Tauri v2's native `${{ env.VAR }}` template syntax substitutes them directly into `tauri.conf.json` at build/dev time — no patching script is needed.
+Copy `.env.example` → `.env` and fill in your values. The Rust backend reads these at **build time** (via `option_env!`) and at **runtime in dev** (via the `dotenv` crate — see `src-tauri/src/lib.rs::init_env`).
+
+The Tauri CLI does **not** natively substitute env vars into `tauri.conf.json` (its parser is a plain `serde_json::from_str`). To keep `tauri.conf.json` fork-agnostic, the build script `scripts/build-tauri-config.ts` reads `.env` and emits `src-tauri/.tauri-runtime.conf.json` (gitignored), which is passed to the Tauri CLI via `--config` and merged with the base config using JSON Merge Patch (RFC 7396). This happens automatically via the `tauri:dev` / `tauri:build` npm scripts — see §7.2.
+
+The base `tauri.conf.json` carries **structural config** (build commands, dev URL, window shape, CSP, bundle icons/category, updater install mode) plus **obvious placeholder values** for per-fork fields (`productName`, `version`, `identifier`, descriptions, updater pubkey/endpoints). The placeholders are intentionally fake — e.g. `"productName": "SET_VITE_APP_NAME_IN_.env"`, `"version": "0.0.0"`, `"identifier": "com.example.set-vite-app-identifier-in-env"`, `"endpoints": ["https://example.invalid/"]` — so a fork opening the file immediately understands that real values come from `.env`. All placeholders are schema-valid on their own, so the base config is a valid standalone Tauri config; the merge-patch overrides them with real values from `.env` whenever the relevant env var is set.
+
+> **Why no `_DO_NOT_EDIT` documentation field?** Tauri’s JSON schema has `additionalProperties: false` at the root, so any unknown root key (like a `_comment` or `_DO_NOT_EDIT` field) fails schema validation — Tauri CLI exits with code 1. JSON5 would allow comments via a header block, but enabling it requires the `config-json5` Cargo feature on `tauri-build` and `tauri`; the placeholder approach was chosen instead to avoid adding a Cargo feature flag for what is essentially a documentation concern.
 
 ```bash
 # Identity
@@ -331,9 +340,9 @@ VITE_DEFAULT_RUN_ON_BATTERY=false
 VITE_DEFAULT_DEBUG=false
 ```
 
-**Critical:** The bundle `identifier` (now `VITE_APP_IDENTIFIER` in `.env`) must be unique per fork — collisions cause shared webview data directories and corrupted state. Only alphanumeric characters, hyphens, and periods are allowed.
+**Critical:** The bundle `identifier` (`VITE_APP_IDENTIFIER` in `.env`) must be unique per fork — collisions cause shared webview data directories and corrupted state. Only alphanumeric characters, hyphens, and periods are allowed.
 
-**Multi-line env values:** `VITE_UPDATER_PUBKEY` contains a PEM with newlines. Loaders that strip newlines (e.g. `export $(cat .env | xargs)`) will corrupt it — use `set -a; source .env; set +a` or `bun --env-file=.env` instead. The Tauri CLI auto-loads `.env` from the project root and preserves newlines.
+**Multi-line env values:** `VITE_UPDATER_PUBKEY` contains a PEM with newlines. Loaders that strip newlines (e.g. `export $(cat .env | xargs)`) will corrupt it — use `set -a; source .env; set +a` or `bun --env-file=.env` instead. The `build-tauri-config.ts` script parses `.env` directly (with multi-line quote support), so it is unaffected by the shell loader choice, but the Rust backend’s `option_env!` reads from the OS environment at compile time, so for production builds the env must be exported to the OS with newlines preserved.
 
 ### 7.2 Development Commands
 
@@ -341,12 +350,16 @@ VITE_DEFAULT_DEBUG=false
 # Install dependencies
 bun install
 
-# Development (hot reload)
-bun run tauri dev
+# Development (hot reload) — generates merge-patch from .env, then runs tauri dev
+bun run tauri:dev
 
-# Production build (preserves multi-line env values like VITE_UPDATER_PUBKEY)
+# Production build — exports env to OS (for option_env! at compile time), then generates merge-patch and runs tauri build
 set -a; source .env; set +a
-bun run tauri build
+bun run tauri:build
+
+# Other Tauri CLI subcommands (info, icon, signer generate, …) use the plain `tauri` script:
+bun run tauri info
+bun run tauri icon
 
 # Icon generation (after placing app-icon.png)
 bun tauri icon
@@ -354,6 +367,8 @@ bun tauri icon
 # liminal-api build
 bun run build    # in packages/liminal-api/
 ```
+
+The `tauri:dev` and `tauri:build` scripts run `scripts/build-tauri-config.ts` first, then invoke `tauri dev --config src-tauri/.tauri-runtime.conf.json` (resp. `tauri build …`). The plain `tauri` script is unchanged because `--config` is only accepted by the `dev`/`build`/`bundle` subcommands, not by `info`/`icon`/etc.
 
 ### 7.3 Platform Notes
 

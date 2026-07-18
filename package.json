@@ -11,7 +11,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:dev": "bun run scripts/build-tauri-config.ts && tauri dev --config src-tauri/.tauri-runtime.conf.json",
+    "tauri:build": "bun run scripts/build-tauri-config.ts && tauri build --config src-tauri/.tauri-runtime.conf.json"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

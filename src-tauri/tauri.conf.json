@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "${{ env.VITE_APP_NAME }}",
-  "version": "${{ env.VITE_APP_VERSION }}",
-  "identifier": "${{ env.VITE_APP_IDENTIFIER }}",
+  "productName": "SET_VITE_APP_NAME_IN_.env",
+  "version": "0.0.0",
+  "identifier": "com.example.set-vite-app-identifier-in-env",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "${{ env.VITE_APP_NAME }}",
+        "title": "SET_VITE_APP_NAME_IN_.env",
         "width": 900,
         "height": 650,
         "visible": false,
@@ -45,14 +45,14 @@
       "icons/icon.ico"
     ],
     "category": "Entertainment",
-    "shortDescription": "${{ env.VITE_APP_DESCRIPTION }}",
-    "longDescription": "${{ env.VITE_APP_DESCRIPTION }}",
+    "shortDescription": "Set VITE_APP_DESCRIPTION in .env",
+    "longDescription": "Set VITE_APP_DESCRIPTION in .env",
     "createUpdaterArtifacts": true
   },
   "plugins": {
     "updater": {
-      "pubkey": "${{ env.VITE_UPDATER_PUBKEY }}",
-      "endpoints": ["${{ env.VITE_UPDATER_ENDPOINT }}"],
+      "pubkey": "SET_VITE_UPDATER_PUBKEY_IN_.env",
+      "endpoints": ["https://example.invalid/"],
       "windows": {
         "installMode": "passive"
       }
