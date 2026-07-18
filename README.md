@@ -158,6 +158,8 @@ The script refuses to run off `main`, on a dirty working tree, behind `origin`, 
 
 When the build finishes, **review the draft release and publish it manually**. Publishing is the go-live moment: the updater endpoint points at `releases/latest/download/latest.json`, so every installed app picks up the new version as soon as the release is public.
 
+> **Do not tick "Set as a pre-release" when publishing.** GitHub's `releases/latest` endpoint only resolves the newest full release — a pre-release is never "latest", so the updater endpoint 404s. If a release was published as a pre-release by mistake, fix it with `gh release edit vX.Y.Z --prerelease=false --latest`.
+
 ### Keeping the Config in Sync
 
 - **Version bumps** need no secret changes — CI stamps `VITE_APP_VERSION` from the tag.
