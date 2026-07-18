@@ -6,6 +6,7 @@ pub mod display_manager;
 pub mod notification_service;
 pub mod power_monitor;
 pub mod screensaver_engine;
+pub mod speech;
 pub mod updater;
 
 use tauri::{
@@ -474,6 +475,9 @@ async fn create_preview_window<R: Runtime>(
         .always_on_top(false)
         .skip_taskbar(false)
         .initialization_script(build_init_script(&instance_id, &app_name))
+        // Preview loads the same saver content as saver windows — it needs the
+        // same speechSynthesis fallback (no-op where the native API exists)
+        .initialization_script(speech::POLYFILL_JS)
         .build()
         .map_err(|e| format!("Failed to create preview window: {}", e))?;
     Ok(())
@@ -738,6 +742,9 @@ pub fn run() {
             get_screensaver_status,
             activate_screensaver_command,
             deactivate_screensaver_command,
+            speech::speak_text,
+            speech::cancel_speech,
+            speech::speech_synthesis_supported,
             power_monitor::get_system_idle_time,
             power_monitor::get_system_idle_state,
             power_monitor::is_on_battery_power,

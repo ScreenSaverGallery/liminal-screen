@@ -458,7 +458,9 @@ impl ScreensaverEngine {
         .skip_taskbar(true)
         .visible(false)
         .focused(true)
-        .initialization_script(super::build_init_script(&instance_id, &app_name));
+        .initialization_script(super::build_init_script(&instance_id, &app_name))
+        // speechSynthesis fallback for WebKitGTK (no-op where the native API exists)
+        .initialization_script(super::speech::POLYFILL_JS);
 
         let scale = monitor.scale_factor;
         let logical_x = monitor.position.x as f64 / scale;

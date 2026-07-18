@@ -1,8 +1,8 @@
 - [ ] bug: window.navigation.href returns strange url (https://metazoa.org/ssg/open-call-2026/?mutedfalse&c=65b65fb6-08fd-4c8b-81c9-5e3eaee4469f) | is there a way of how to add params to navigator?
-- [ ] bug: saver id null
-- [ ] liminal screen icon
-- [ ] win + linux
-- [ ] linux speech synthesis workaround, see: .hermes/plans/linux-speech-synthesis-workaround/PLAN.md
+- [x] bug: saver id null
+- [x] liminal screen icon
+- [x] win + linux
+- [x] linux speech synthesis workaround (implemented 2026-07-17; runtime verification on a Linux machine still pending), see: .hermes/plans/linux-speech-synthesis-workaround/
 - [ ] security check, see: .hermes/plans/security/PLAN.md
 - [ ] e2e tests, see: .hermes/plans/testing/PLAN.md Part B (unit tests done)
 - [x] unit tests (Rust: `cargo test` in src-tauri; TS: `bun run test` — see .hermes/plans/testing/)

@@ -170,6 +170,7 @@ The Rust backend is the engine — it handles all screensaver lifecycle, window 
 - `display_manager.rs` — Monitor detection and logical coordinate calculation for multi-monitor fullscreen positioning
 - `power_monitor.rs` — Platform-specific idle time detection (macOS IOKit, Windows `GetLastInputInfo`, Linux systemd-inhibit + X11 screensaver queries)
 - `autoplay_media.rs` — Per-window autoplay permission configuration for WKWebView (macOS) and WebView2 (Windows)
+- `speech.rs` + `speech_polyfill.js` — `speechSynthesis` fallback for Linux (WebKitGTK ships no Web Speech API): a JS shim injected into saver/preview windows forwards `speak`/`cancel` to `spd-say` via Tauri commands; inert on macOS/Windows where the native API exists
 
 ### Shared Library (`packages/liminal-api/`)
 
@@ -213,6 +214,21 @@ The app uses a layered approach to stop audio cleanly:
 ### Autoplay Configuration
 
 On macOS, autoplay must be configured BEFORE any content loads. The app creates windows with `about:blank`, configures autoplay permissions, then navigates to the real URL.
+
+### Speech Synthesis on Linux
+
+WebKitGTK does not implement `window.speechSynthesis`, so saver content that speaks text would be silent on Linux. The app injects a Web Speech API polyfill into saver and preview windows that forwards utterances to `spd-say`. **Linux users need `speech-dispatcher` installed** (provides the `spd-say` binary; preinstalled on many desktop distributions):
+
+```bash
+# Debian/Ubuntu
+sudo apt install speech-dispatcher
+# Fedora
+sudo dnf install speech-dispatcher-utils
+# Arch
+sudo pacman -S speech-dispatcher
+```
+
+Without it, speech is skipped gracefully (utterances fire `error` events). macOS and Windows use their webviews' native speech synthesis — the polyfill steps aside there.
 
 ## License
 

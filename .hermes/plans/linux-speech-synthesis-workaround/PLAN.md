@@ -1,7 +1,8 @@
 # Plan: Linux Speech Synthesis Workaround
 
-**Created:** 2026-07-10  
-**Status:** Draft
+**Created:** 2026-07-10
+**Revised:** 2026-07-17 (corrected delivery mechanism + platform-gating strategy, see "Corrections" below)
+**Status:** Implemented (pending Linux runtime verification — see IMPLEMENTATION_SUMMARY.md)
 
 ## Problem / Context
 
@@ -16,123 +17,140 @@ WebKitGTK on Linux exposes `navigator.serviceWorker` but **does not expose a wor
 
 The screensaver content (a remote PWA) uses `speechSynthesis` to speak on-screen text. On Linux this fails silently because the API is entirely absent. macOS and Windows are not affected: their webviews ship with functional speech synthesis backends.
 
+The API gap exists in *every* WebKitGTK webview (main, options, saver, preview alike — it is an engine property), but only the **saver content** actually calls it. The saver URL is loaded by two window kinds: the `saver-display-*` windows and the **preview window** — both must get the fallback.
+
 The project does not currently need speech recognition, so only **text-to-speech (TTS)** needs a fallback.
+
+## Corrections to the original draft (2026-07-17)
+
+1. **Delivery: init-script injection, not a liminal-api export.** The original
+   Phase 3 wired `initSpeechSynthesis()` into `src/main.ts` and the remote
+   *options* page — the two places that never speak — and left delivery to the
+   actual consumer (the remote saver PWA) as Open Question 3. Corrected: the
+   polyfill is injected from Rust via `initialization_script` into the
+   **saver** and **preview** windows — the same mechanism already used for
+   `navigator.id` (`build_init_script`). The remote PWA needs zero changes and
+   no `liminal-api` import; every fork gets it automatically, including in the
+   preview window.
+
+2. **Commands registered on all platforms, implementation gated.** The original
+   plan gated the commands themselves with `#[cfg(target_os = "linux")]`.
+   AGENT.md's cross-platform discipline requires every `#[cfg]` branch to have
+   a fallback, and unconditional registration keeps `generate_handler!` free of
+   cfg gymnastics. Corrected: `speak_text` / `cancel_speech` /
+   `speech_synthesis_supported` exist everywhere; on non-Linux they return
+   `Err("…only available on Linux")` / `false`. The polyfill feature-detects
+   (`'speechSynthesis' in window`) rather than platform-detects, so on
+   macOS/Windows it steps aside before ever invoking. Bonus: the whole
+   JS → invoke → Rust round-trip is testable from macOS.
+
+3. **No capability changes needed for the commands themselves.** App-defined
+   commands are not governed by the plugin/core permission ACL, so the original
+   "add permissions to `capabilities/default.json`" step is dropped. The real
+   open point is whether **remote-URL windows get the IPC bridge at all**
+   (`window.__TAURI_INTERNALS__`) — the standing question tracked in
+   `.hermes/plans/security/PLAN.md` (capabilities target remote windows without
+   a `remote` scope). The polyfill degrades gracefully (console warning, no
+   shim) when the bridge is absent; if Linux verification shows the bridge
+   missing in saver windows, the fix is a `remote` scope on `saver.json` —
+   to be decided together with the security plan.
+
+4. **File corrections:** `options/main.ts` does not exist (the local options UI
+   is `src/main.ts`; the remote options page lives outside this repo). The
+   polyfill lives in `src-tauri/src/speech_polyfill.js` (embedded via
+   `include_str!`), not in `packages/liminal-api`.
 
 ## Goal
 
-Provide a **transparent, platform-gated fallback** so that frontend code can continue calling a Web Speech-compatible API, and on Linux the audio is produced by a native backend invoked through a Tauri command.
+Provide a **transparent, feature-gated fallback** so saver content can keep
+calling the standard Web Speech API; on Linux the audio is produced by
+`spd-say` (speech-dispatcher) invoked through Tauri commands.
 
-## Current State
+## Architecture (as implemented)
 
-- `src-tauri/src/lib.rs` registers all Tauri commands and exposes `AppState` / `AppOptions`.
-- `src-tauri/Cargo.toml` already has a Linux-specific dependency section with `webkit2gtk`.
-- No frontend code currently references `speechSynthesis`; the remote saver page does.
-- The project uses a `liminal-api` SDK to bridge remote pages to native features.
+1. **Rust backend — `src-tauri/src/speech.rs`:**
+   - `speak_text(text, rate?, pitch?, volume?, lang?)` — async command; on
+     Linux runs `spd-say -w` via `spawn_blocking` (blocks until the utterance
+     finishes, so the JS side can fire a truthful `end` event). Utterance
+     parameters are mapped from Web Speech ranges to spd-say's −100..100 via
+     pure functions (`web_rate_to_spd`, `web_pitch_to_spd`,
+     `web_volume_to_spd`) with unit tests.
+   - `cancel_speech()` — runs `spd-say -C` (flushes the speech-dispatcher
+     queue, matching `speechSynthesis.cancel()` semantics).
+   - `speech_synthesis_supported()` — probes `spd-say --version`.
+   - Text is passed as an exec-style argument after `--` — no shell, no
+     injection, option-lookalike text is safe.
+   - Non-Linux: stubs returning `false` / `Err`, per AGENT.md fallback rule.
 
-## Proposed Changes
+2. **JS polyfill — `src-tauri/src/speech_polyfill.js`:**
+   - Injected at document-start; exits immediately when the native API exists
+     or the IPC bridge (`__TAURI_INTERNALS__`) is missing (warns once).
+   - Defines minimal `SpeechSynthesisUtterance` + `window.speechSynthesis`
+     with `speak` / `cancel` / `pause` (no-op) / `resume` (no-op) /
+     `getVoices` (empty), `speaking` / `pending` getters.
+   - Utterances are queued (promise chain) like the native API;
+     `start` / `end` / `error` events fire per utterance; `cancel()` bumps a
+     generation counter so queued utterances drain without speaking.
 
-### Architecture
+3. **Injection points:**
+   - `screensaver_engine.rs::create_saver_window` — saver windows.
+   - `lib.rs::create_preview_window` — preview window (same saver URL).
 
-1. **Rust backend (Linux only):**
-   - Add a new module `src-tauri/src/linux_speech.rs`.
-   - Use `std::process::Command` to call `spd-say` (simplest, no extra deps).
-   - Gate the module and its commands with `#[cfg(target_os = "linux")]`.
-   - Expose:
-     - `linux_speak(text: String) -> Result<(), String>` — fire-and-forget TTS.
-     - `linux_cancel_speech() -> Result<(), String>` — stop current utterance.
-     - `linux_speech_supported() -> bool` — runtime probe for `spd-say`.
-
-2. **Frontend / SDK polyfill:**
-   - Add a small `speechSynthesis` polyfill in `packages/liminal-api/src/speech.ts`.
-   - When running inside Tauri on Linux, the polyfill forwards `speak()` / `cancel()` to the Rust commands.
-   - On macOS/Windows or in a regular browser, the polyfill steps aside and uses the native `window.speechSynthesis`.
-   - Publish the polyfill as part of `liminal-api` so remote saver pages can import it.
-
-3. **Tauri command registration and capability:**
-   - Register the Linux-only commands in `src-tauri/src/lib.rs` under `#[cfg(target_os = "linux")]`.
-   - Add matching permissions to `src-tauri/capabilities/default.json` (Tauri v2 command allow-list).
-
-4. **Build / runtime dependency:**
-   - Document that Linux users need `speech-dispatcher` installed (`spd-say` binary).
-   - No new Rust crate dependencies unless we later need richer voice control.
-
-## Implementation Phases
-
-### Phase 1: Rust TTS module
-
-1. Create `src-tauri/src/linux_speech.rs`:
-   - Probe `which spd-say` once at first use (or on startup).
-   - `linux_speak(text)` spawns `spd-say "$text"`, non-blocking.
-   - `linux_cancel_speech()` runs `spd-say --cancel` (or `spd-say -C`).
-   - `linux_speech_supported()` returns `true` if `spd-say` is on `PATH`.
-2. Add `pub mod linux_speech;` in `lib.rs` under `#[cfg(target_os = "linux")]`.
-3. Add commands to the `invoke_handler!` with `#[cfg(target_os = "linux")]` guard.
-4. Add permissions to `capabilities/default.json`.
-5. Run `cargo check` inside `src-tauri`.
-
-### Phase 2: Frontend polyfill in liminal-api
-
-1. Create `packages/liminal-api/src/speech.ts`:
-   - Detect Tauri + Linux (e.g. via user agent or `navigator.userAgent`).
-   - If polyfill needed, define minimal `SpeechSynthesisUtterance` and `SpeechSynthesis` shim that calls `invoke('linux_speak', ...)` and `invoke('linux_cancel_speech')`.
-   - Export an `initSpeechSynthesis()` function that injects the shim only when `window.speechSynthesis` is missing and the runtime is Tauri on Linux.
-2. Export the new module from `packages/liminal-api/src/index.ts`.
-3. Build the SDK with `bun run build` in `packages/liminal-api/`.
-4. Add a unit test in `packages/liminal-api/` that verifies the polyfill is not injected when native speech synthesis exists.
-
-### Phase 3: Wire into remote saver / options pages
-
-1. In the main app (`src/main.ts`) and in the `options/` remote page, call `initSpeechSynthesis()` from `liminal-api` at startup when running under Tauri.
-2. Verify with a local test page that `speechSynthesis.speak(new SpeechSynthesisUtterance("test"))` works in the Linux webview.
-
-### Phase 4: Documentation and verification
-
-1. Update `README.md` with the Linux runtime dependency (`speech-dispatcher`).
-2. Update `.env.example` if any new env var is introduced (none planned).
-3. Add a line to `TODO.md` marking the feature complete.
-4. Run `bun run test`, `bun run build`, and `cargo test`.
+4. **Runtime dependency (Linux only):** `speech-dispatcher` (`spd-say`
+   binary). Documented in README. Absent binary → commands return errors →
+   polyfill fires `error` events; nothing crashes.
 
 ## Files Touched
 
 | File | Action |
 |---|---|
-| `src-tauri/src/linux_speech.rs` | Create |
-| `src-tauri/src/lib.rs` | Add Linux-gated mod + commands |
-| `src-tauri/Cargo.toml` | No change unless we add a crate |
-| `src-tauri/capabilities/default.json` | Add command permissions |
-| `packages/liminal-api/src/speech.ts` | Create polyfill |
-| `packages/liminal-api/src/index.ts` | Export new module |
-| `src/main.ts` | Call `initSpeechSynthesis()` on startup |
-| `options/main.ts` | Call `initSpeechSynthesis()` on startup |
-| `README.md` | Document Linux dependency |
-| `TODO.md` | Mark task done after implementation |
+| `src-tauri/src/speech.rs` | Create — commands, spd-say driver, param mapping + tests |
+| `src-tauri/src/speech_polyfill.js` | Create — Web Speech API shim (embedded via `include_str!`) |
+| `src-tauri/src/lib.rs` | `pub mod speech`, register 3 commands, inject polyfill into preview window |
+| `src-tauri/src/screensaver_engine.rs` | Inject polyfill into saver windows |
+| `src/app/speech-polyfill.test.ts` | Create — vitest coverage of the shim (native-present, no-bridge, speak/cancel paths) |
+| `README.md` | Document Linux `speech-dispatcher` dependency |
+| `TODO.md` | Mark item done |
 
 ## Verification
 
-1. On Linux:
-   - Run `spd-say "hello"` to confirm TTS backend is present.
-   - Run `bun tauri dev`.
-   - Open WebKit inspector and evaluate:
-     ```js
-     const u = new SpeechSynthesisUtterance('hello from liminal screen');
-     window.speechSynthesis.speak(u);
-     window.speechSynthesis.cancel();
-     ```
-   - Audio should play and cancel should stop it.
-2. On macOS / Windows:
-   - Confirm `window.speechSynthesis` remains native and no Rust command is invoked.
-3. Automated:
-   - `cargo test` passes.
-   - `bun run test` passes.
-   - `bun run build` succeeds.
+Done on macOS (see IMPLEMENTATION_SUMMARY.md): `cargo test`, `cargo check`,
+`bun run test`, `bun run build`; polyfill behavior unit-tested against fake
+`window` objects (native API present → untouched; no bridge → warns, no shim;
+speak → correct invoke payload + event order; cancel → queue drained).
+
+**Pending on a Linux machine (X11 and Wayland session each):**
+
+1. `spd-say "hello"` — confirm the TTS backend is present.
+2. Run the app; in the WebKit inspector of a **saver window** (not options):
+   ```js
+   'speechSynthesis' in window                       // true (shim installed)
+   const u = new SpeechSynthesisUtterance('hello from liminal screen');
+   u.onend = () => console.log('end');
+   window.speechSynthesis.speak(u);                  // audio plays, 'end' logs
+   window.speechSynthesis.cancel();                  // audio stops
+   ```
+3. **If the shim logs "no IPC bridge"**: remote saver windows lack
+   `__TAURI_INTERNALS__` → add a `remote` scope to
+   `src-tauri/capabilities/saver.json` per the security plan, and re-test.
+4. Repeat step 2 in the preview window.
+5. On macOS/Windows: confirm `window.speechSynthesis` is still the native
+   implementation (shim exits at the feature check).
 
 ## Open Questions
 
-1. Do we want to support voice / rate / pitch parameters later? `spd-say` has limited options; a richer Rust TTS crate (`tts`) could replace it without changing the JS API.
-2. Should the polyfill also queue utterances like the native API, or is fire-and-forget acceptable for the screensaver use case?
-3. Is the remote saver page already importing `liminal-api`, or do we need to expose the polyfill through a global script injection as well?
+1. Voice selection (`getVoices` returns `[]`): `spd-say -t`/`-y` could map to
+   synthetic voice entries later; a richer Rust TTS crate (`tts`) could replace
+   spd-say without changing the JS surface. Deferred.
+2. `pause()`/`resume()` are no-ops (spd-say has no pause control). Acceptable
+   for the screensaver use case.
+3. ~~Is the remote saver page already importing liminal-api?~~ Resolved by
+   correction 1 — irrelevant, injection needs no page cooperation. The
+   remaining half of the question (does the saver window have an IPC bridge)
+   moves to Linux verification step 3.
 
 ## Related Plans
 
 - `.hermes/plans/multiplatform-fixes/PLAN.md` — prior Linux/Wayland work.
-- `.hermes/plans/app-identity-promotion/PLAN.md` — remote page integration patterns.
+- `.hermes/plans/security/PLAN.md` — remote-URL windows / `remote` scope question.
+- `.hermes/plans/preview-window-windows-deadlock/PLAN.md` — preview window creation path (the polyfill injection lands in the same builder).
