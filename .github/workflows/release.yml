@@ -108,6 +108,22 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
+      # The Rust backend bakes VITE_* values in at compile time via option_env!,
+      # which reads the process environment — a .env file on disk is NOT enough.
+      # Without this, the binary ships with about:blank as the saver URL.
+      - name: Export .env to the build environment
+        shell: bash
+        run: bun run scripts/export-env-to-github.ts
+
+      - name: Verify build environment
+        shell: bash
+        run: |
+          if [ -z "$VITE_SAVER_URL" ]; then
+            echo "::error::VITE_SAVER_URL did not reach the build environment — the compiled saver would be blank." >&2
+            exit 1
+          fi
+          echo "VITE_SAVER_URL is set for the compile step."
+
       - name: Generate Tauri runtime config
         run: bun run scripts/build-tauri-config.ts
 

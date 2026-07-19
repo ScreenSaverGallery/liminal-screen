@@ -25,6 +25,8 @@ import { join } from "path";
 const ROOT = process.cwd();
 const PKG_PATH = join(ROOT, "package.json");
 const ENV_PATH = join(ROOT, ".env");
+const CARGO_TOML_PATH = join(ROOT, "src-tauri", "Cargo.toml");
+const CARGO_LOCK_PATH = join(ROOT, "src-tauri", "Cargo.lock");
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 const RELEASE_BRANCH = "main";
@@ -55,6 +57,33 @@ function bump(current: string, kind: string): string {
       }
       return kind;
   }
+}
+
+/**
+ * Bump the crate version in src-tauri/Cargo.toml and its Cargo.lock entry.
+ * CARGO_PKG_VERSION is baked into the binary (used in the injected
+ * `navigator.userAgent` suffix and `navigator.liminalScreen.version`), so a
+ * stale crate version means remote saver pages see the wrong app version.
+ */
+function setCargoVersion(version: string): void {
+  const toml = readFileSync(CARGO_TOML_PATH, "utf-8");
+  const nameMatch = toml.match(/^name\s*=\s*"([^"]+)"/m);
+  const versionRe = /^(version\s*=\s*)"[^"]*"/m;
+  if (!nameMatch || !versionRe.test(toml)) {
+    fail(`Could not find package name/version in ${CARGO_TOML_PATH}.`);
+  }
+  writeFileSync(CARGO_TOML_PATH, toml.replace(versionRe, `$1"${version}"`));
+
+  // Keep Cargo.lock in sync so builds with --locked don't fail and the diff
+  // stays honest. The lock entry is `name = "<crate>"` followed by `version`.
+  const lock = readFileSync(CARGO_LOCK_PATH, "utf-8");
+  const lockRe = new RegExp(
+    `(name = "${nameMatch[1]}"\\nversion = )"[^"]*"`,
+  );
+  if (!lockRe.test(lock)) {
+    fail(`Could not find crate "${nameMatch[1]}" in ${CARGO_LOCK_PATH}.`);
+  }
+  writeFileSync(CARGO_LOCK_PATH, lock.replace(lockRe, `$1"${version}"`));
 }
 
 /** Replace the VITE_APP_VERSION line in a .env-style file. */
@@ -110,10 +139,11 @@ function main(): void {
   console.log(`[release] ${pkg.version} -> ${next}`);
   pkg.version = next;
   writeFileSync(PKG_PATH, JSON.stringify(pkg, null, 2) + "\n");
+  setCargoVersion(next);
   if (existsSync(ENV_PATH)) setEnvVersion(ENV_PATH, next);
 
   // --- Commit, tag, push -----------------------------------------------------
-  git("add package.json");
+  git("add package.json src-tauri/Cargo.toml src-tauri/Cargo.lock");
   git(`commit -m "release: ${tag}"`);
   git(`tag -a ${tag} -m "release: ${tag}"`);
   console.log(`[release] Pushing ${RELEASE_BRANCH} and ${tag}...`);
