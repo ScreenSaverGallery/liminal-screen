@@ -83,6 +83,101 @@ pub fn is_on_battery_power() -> Result<bool, String> {
     return is_on_battery_linux();
 }
 
+/// Snapshot of the OS-native screensaver configuration. Liminal is meant to be
+/// the *only* screensaver — a system screensaver on an overlapping timer will
+/// draw over Liminal's windows (its idle-sleep assertion does not suppress it),
+/// so the options UI warns the user when one is enabled.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OsScreensaverStatus {
+    /// Whether we could actually read the setting on this platform/desktop.
+    pub detected: bool,
+    /// True when the OS screensaver is configured to activate on an idle timer.
+    pub enabled: bool,
+    /// Idle seconds before the OS screensaver starts; None when disabled/unknown.
+    pub idle_seconds: Option<u64>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+impl OsScreensaverStatus {
+    fn unknown() -> Self {
+        Self {
+            detected: false,
+            enabled: false,
+            idle_seconds: None,
+        }
+    }
+
+    fn disabled() -> Self {
+        Self {
+            detected: true,
+            enabled: false,
+            idle_seconds: None,
+        }
+    }
+
+    fn enabled(idle_seconds: Option<u64>) -> Self {
+        Self {
+            detected: true,
+            enabled: true,
+            idle_seconds,
+        }
+    }
+}
+
+#[command]
+pub fn get_os_screensaver_status() -> Result<OsScreensaverStatus, String> {
+    #[cfg(target_os = "macos")]
+    return Ok(os_screensaver_status_macos());
+
+    #[cfg(target_os = "windows")]
+    return Ok(os_screensaver_status_windows());
+
+    #[cfg(target_os = "linux")]
+    return Ok(os_screensaver_status_linux());
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    Ok(OsScreensaverStatus {
+        detected: false,
+        enabled: false,
+        idle_seconds: None,
+    })
+}
+
+/// Disable the OS-native screensaver ("Never"). Reversible via
+/// [`set_os_screensaver_idle_direct`]; callers persist the prior value first.
+pub fn set_os_screensaver_disabled_direct() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return write_screensaver_idle_macos(0);
+
+    #[cfg(target_os = "windows")]
+    return set_screensaver_active_windows(false, None);
+
+    #[cfg(target_os = "linux")]
+    return write_gnome_idle_delay(0);
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    Ok(())
+}
+
+/// Restore the OS-native screensaver to the given idle timeout (seconds).
+pub fn set_os_screensaver_idle_direct(seconds: u64) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return write_screensaver_idle_macos(seconds);
+
+    #[cfg(target_os = "windows")]
+    return set_screensaver_active_windows(true, Some(seconds));
+
+    #[cfg(target_os = "linux")]
+    return write_gnome_idle_delay(seconds);
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = seconds;
+        Ok(())
+    }
+}
+
 #[command]
 pub fn lock_screen() -> Result<(), String> {
     lock_system_direct()
@@ -480,6 +575,58 @@ fn lock_system_macos_direct() -> Result<(), String> {
     Ok(())
 }
 
+/// Read the system screensaver idle timeout. `defaults -currentHost read
+/// com.apple.screensaver idleTime` returns the seconds before the OS screensaver
+/// starts; 0 means "Never". A missing key or non-zero exit means we can't tell,
+/// so we report `detected: false` rather than guessing a default.
+#[cfg(target_os = "macos")]
+fn os_screensaver_status_macos() -> OsScreensaverStatus {
+    let output = std::process::Command::new("defaults")
+        .args(["-currentHost", "read", "com.apple.screensaver", "idleTime"])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            match String::from_utf8_lossy(&out.stdout).trim().parse::<u64>() {
+                Ok(0) => OsScreensaverStatus::disabled(),
+                Ok(secs) => OsScreensaverStatus::enabled(Some(secs)),
+                Err(_) => OsScreensaverStatus::unknown(),
+            }
+        }
+        _ => OsScreensaverStatus::unknown(),
+    }
+}
+
+/// Write the system screensaver idle timeout (0 = Never). `defaults` lands the
+/// value in the cfprefsd-backed store; we then nudge cfprefsd so the screensaver
+/// subsystem re-reads it promptly rather than on next login (best-effort).
+#[cfg(target_os = "macos")]
+fn write_screensaver_idle_macos(seconds: u64) -> Result<(), String> {
+    use std::process::Command;
+
+    let status = Command::new("defaults")
+        .args([
+            "-currentHost",
+            "write",
+            "com.apple.screensaver",
+            "idleTime",
+            "-int",
+            &seconds.to_string(),
+        ])
+        .status()
+        .map_err(|e| format!("Failed to run defaults write: {}", e))?;
+    if !status.success() {
+        return Err(format!(
+            "defaults write com.apple.screensaver idleTime exited with {:?}",
+            status.code()
+        ));
+    }
+
+    // Flush the prefs cache so the change is picked up without a re-login.
+    let _ = Command::new("killall").arg("cfprefsd").status();
+    Ok(())
+}
+
 // ─── Linux ────────────────────────────────────────────────────────────────────
 
 /// Run a command and report success only if it exits 0. `spawn().is_ok()` is
@@ -729,6 +876,132 @@ fn prevent_sleep_linux_direct() -> Result<(), String> {
     }
 }
 
+/// Best-effort: GNOME's `org.gnome.desktop.session idle-delay` (uint32 seconds,
+/// 0 = never) governs when the session blanks / the screensaver kicks in. Other
+/// desktops (KDE, etc.) expose this differently, so a failure here is reported
+/// as `detected: false` rather than a false "no conflict".
+#[cfg(target_os = "linux")]
+fn os_screensaver_status_linux() -> OsScreensaverStatus {
+    let output = std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.session", "idle-delay"])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            // Value looks like "uint32 300".
+            let raw = String::from_utf8_lossy(&out.stdout);
+            match raw.split_whitespace().last().and_then(|s| s.parse::<u64>().ok()) {
+                Some(0) => OsScreensaverStatus::disabled(),
+                Some(secs) => OsScreensaverStatus::enabled(Some(secs)),
+                None => OsScreensaverStatus::unknown(),
+            }
+        }
+        _ => OsScreensaverStatus::unknown(),
+    }
+}
+
+/// GNOME best-effort: set `idle-delay` (0 = never) and match
+/// `idle-activation-enabled`. Other desktops are left untouched.
+#[cfg(target_os = "linux")]
+fn write_gnome_idle_delay(seconds: u64) -> Result<(), String> {
+    use std::process::Command;
+
+    let status = Command::new("gsettings")
+        .args([
+            "set",
+            "org.gnome.desktop.session",
+            "idle-delay",
+            &seconds.to_string(),
+        ])
+        .status()
+        .map_err(|e| format!("Failed to run gsettings set: {}", e))?;
+    if !status.success() {
+        return Err(format!(
+            "gsettings set idle-delay exited with {:?}",
+            status.code()
+        ));
+    }
+
+    // Keep the screensaver activation flag consistent with the delay.
+    let _ = Command::new("gsettings")
+        .args([
+            "set",
+            "org.gnome.desktop.screensaver",
+            "idle-activation-enabled",
+            if seconds == 0 { "false" } else { "true" },
+        ])
+        .status();
+    Ok(())
+}
+
+// ─── Windows ───────────────────────────────────────────────────────────────────
+
+/// Best-effort: `HKCU\Control Panel\Desktop` holds `ScreenSaveActive` ("1"/"0")
+/// and `ScreenSaveTimeOut` (seconds). Read via `reg query` to avoid pulling in
+/// the registry Win32 feature. If the active flag can't be read we report
+/// `detected: false`.
+#[cfg(target_os = "windows")]
+fn os_screensaver_status_windows() -> OsScreensaverStatus {
+    fn read_value(value: &str) -> Option<String> {
+        let out = std::process::Command::new("reg")
+            .args(["query", "HKCU\\Control Panel\\Desktop", "/v", value])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        // Line looks like: "    ScreenSaveTimeOut    REG_SZ    600"
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        stdout
+            .lines()
+            .find(|l| l.contains(value))
+            .and_then(|l| l.split_whitespace().last().map(str::to_string))
+    }
+
+    match read_value("ScreenSaveActive") {
+        Some(active) if active == "1" => {
+            let secs = read_value("ScreenSaveTimeOut").and_then(|v| v.parse::<u64>().ok());
+            OsScreensaverStatus::enabled(secs.filter(|s| *s > 0))
+        }
+        Some(_) => OsScreensaverStatus::disabled(),
+        None => OsScreensaverStatus::unknown(),
+    }
+}
+
+/// Toggle the screensaver via `SystemParametersInfoW` — takes effect immediately
+/// and persists to the user's profile (`SPIF_UPDATEINIFILE`). When enabling, an
+/// optional timeout (seconds) is applied too.
+#[cfg(target_os = "windows")]
+fn set_screensaver_active_windows(active: bool, timeout: Option<u64>) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SystemParametersInfoW, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SPI_SETSCREENSAVEACTIVE,
+        SPI_SETSCREENSAVETIMEOUT,
+    };
+
+    unsafe {
+        SystemParametersInfoW(
+            SPI_SETSCREENSAVEACTIVE,
+            u32::from(active),
+            None,
+            SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
+        )
+        .map_err(|e| format!("SPI_SETSCREENSAVEACTIVE failed: {}", e))?;
+
+        if active {
+            if let Some(secs) = timeout {
+                SystemParametersInfoW(
+                    SPI_SETSCREENSAVETIMEOUT,
+                    secs as u32,
+                    None,
+                    SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
+                )
+                .map_err(|e| format!("SPI_SETSCREENSAVETIMEOUT failed: {}", e))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 // ─── Plugin initialization ────────────────────────────────────────────────────
 
 pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
@@ -742,6 +1015,7 @@ pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
             get_system_idle_time,
             get_system_idle_state,
             is_on_battery_power,
+            get_os_screensaver_status,
             lock_screen,
             blank_screen,
             prevent_display_sleep,

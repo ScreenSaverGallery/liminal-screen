@@ -23,6 +23,19 @@ export interface AppOptions {
 }
 
 /**
+ * OS-native screensaver configuration — mirrors the Rust `OsScreensaverStatus`.
+ * Used to warn when a system screensaver would compete with Liminal.
+ */
+export interface OsScreensaverStatus {
+  /** Whether the setting could be read on this platform/desktop. */
+  detected: boolean;
+  /** True when the OS screensaver is set to activate on an idle timer. */
+  enabled: boolean;
+  /** Idle seconds before the OS screensaver starts; null when disabled/unknown. */
+  idleSeconds: number | null;
+}
+
+/**
  * Navigator extensions injected at document-start into every remote window
  * (saver, options, preview) by the native init script — see `build_init_script`
  * in `src-tauri/src/lib.rs`. The same identity is appended to both

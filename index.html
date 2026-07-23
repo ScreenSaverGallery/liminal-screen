@@ -27,6 +27,38 @@
 
             <section class="options-section">
                 <h2>Settings</h2>
+                <div
+                    class="conflict-warning"
+                    id="screensaver-conflict-warning"
+                    role="alert"
+                    hidden
+                >
+                    <span class="conflict-warning-icon" aria-hidden="true">⚠</span>
+                    <div class="conflict-warning-body">
+                        <span
+                            class="conflict-warning-text"
+                            id="screensaver-conflict-text"
+                        ></span>
+                        <div class="conflict-warning-actions">
+                            <button
+                                type="button"
+                                class="conflict-btn"
+                                id="disable-screensaver-btn"
+                                hidden
+                            >
+                                Disable system screensaver
+                            </button>
+                            <button
+                                type="button"
+                                class="conflict-btn"
+                                id="restore-screensaver-btn"
+                                hidden
+                            >
+                                Restore system screensaver
+                            </button>
+                        </div>
+                    </div>
+                </div>
                 <form id="options-form">
                     <div class="option-item">
                         <label class="option-label" for="starts-in"
@@ -209,7 +241,7 @@
             </section>
 
             <footer class="app-footer">
-                <p>v0.1.0</p>
+                <p id="app-version">v0.1.0</p>
             </footer>
         </main>
     </body>

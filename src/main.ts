@@ -53,6 +53,11 @@ let debugInput: HTMLInputElement | null = null;
 let notificationsEnabledInput: HTMLInputElement | null = null;
 let notificationsItem: HTMLElement | null = null;
 let saverUrlDisplay: HTMLElement | null = null;
+let conflictWarningElement: HTMLElement | null = null;
+let conflictWarningTextElement: HTMLElement | null = null;
+let conflictWarningIconElement: HTMLElement | null = null;
+let disableScreensaverBtn: HTMLButtonElement | null = null;
+let restoreScreensaverBtn: HTMLButtonElement | null = null;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -179,6 +184,21 @@ function cacheUIElements(): void {
   ) as HTMLInputElement | null;
   notificationsItem = document.getElementById("notifications-item");
   saverUrlDisplay = document.getElementById("saver-url-display");
+  conflictWarningElement = document.getElementById(
+    "screensaver-conflict-warning",
+  );
+  conflictWarningTextElement = document.getElementById(
+    "screensaver-conflict-text",
+  );
+  conflictWarningIconElement = conflictWarningElement?.querySelector(
+    ".conflict-warning-icon",
+  ) as HTMLElement | null;
+  disableScreensaverBtn = document.getElementById(
+    "disable-screensaver-btn",
+  ) as HTMLButtonElement | null;
+  restoreScreensaverBtn = document.getElementById(
+    "restore-screensaver-btn",
+  ) as HTMLButtonElement | null;
 
   [
     startsInInput,
@@ -198,6 +218,36 @@ function setupUIButtonHandlers(): void {
   document
     .getElementById("preview-btn")
     ?.addEventListener("click", () => previewScreensaver());
+
+  document
+    .getElementById("disable-screensaver-btn")
+    ?.addEventListener("click", async () => {
+      try {
+        await PowerMonitor.disableOsScreensaver();
+      } catch (error) {
+        console.error("Failed to disable system screensaver:", error);
+        await message(`Could not disable the system screensaver: ${error}`, {
+          title: "System Screensaver",
+          kind: "error",
+        });
+      }
+      await checkScreensaverConflict();
+    });
+
+  document
+    .getElementById("restore-screensaver-btn")
+    ?.addEventListener("click", async () => {
+      try {
+        await PowerMonitor.restoreOsScreensaver();
+      } catch (error) {
+        console.error("Failed to restore system screensaver:", error);
+        await message(`Could not restore the system screensaver: ${error}`, {
+          title: "System Screensaver",
+          kind: "error",
+        });
+      }
+      await checkScreensaverConflict();
+    });
   document.getElementById("reset-btn")?.addEventListener("click", async () => {
     const confirmed = await ask("Reset all options to defaults?", {
       title: "Reset",
@@ -333,6 +383,70 @@ async function saveOptions(silent = false): Promise<void> {
   }
 }
 
+// ── OS screensaver conflict ──────────────────────────────────────────────────
+
+/** Human-readable duration for the warning text ("90s" → "1m 30s"). */
+function formatSeconds(secs: number): string {
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return s ? `${m}m ${s}s` : `${m}m`;
+}
+
+/**
+ * Liminal is meant to be the only screensaver: a system screensaver on an
+ * overlapping timer draws over Liminal's windows. Three states:
+ *   1. OS screensaver enabled  → amber warning + [Disable] (severe if it wins the race)
+ *   2. Liminal disabled it      → info note + [Restore]
+ *   3. neither                  → banner hidden
+ */
+async function checkScreensaverConflict(): Promise<void> {
+  if (!conflictWarningElement || !conflictWarningTextElement) return;
+
+  const [os, savedIdle] = await Promise.all([
+    PowerMonitor.getOsScreensaverStatus(),
+    PowerMonitor.getSavedOsScreensaverIdle(),
+  ]);
+
+  // State 1: a conflicting OS screensaver is enabled.
+  if (os.detected && os.enabled) {
+    const startsInSecs = (options.get()?.startsIn ?? 0) * 60;
+    const firesFirst = os.idleSeconds != null && os.idleSeconds <= startsInSecs;
+    const timing =
+      os.idleSeconds != null
+        ? ` (starts after ${formatSeconds(os.idleSeconds)})`
+        : "";
+    const lead = firesFirst
+      ? `Your system screensaver${timing} starts before Liminal and will appear on top of it.`
+      : `Your system screensaver is enabled${timing} and may appear on top of Liminal.`;
+
+    conflictWarningTextElement.textContent =
+      `${lead} Liminal works best as your only screensaver.`;
+    conflictWarningElement.classList.remove("is-info");
+    if (conflictWarningIconElement) conflictWarningIconElement.textContent = "⚠";
+    if (disableScreensaverBtn) disableScreensaverBtn.hidden = false;
+    if (restoreScreensaverBtn) restoreScreensaverBtn.hidden = true;
+    conflictWarningElement.hidden = false;
+    return;
+  }
+
+  // State 2: Liminal disabled the OS screensaver — offer to restore it.
+  if (savedIdle != null && savedIdle > 0) {
+    conflictWarningTextElement.textContent =
+      `Liminal disabled your system screensaver (was ${formatSeconds(savedIdle)}) ` +
+      `so it won't appear over Liminal.`;
+    conflictWarningElement.classList.add("is-info");
+    if (conflictWarningIconElement) conflictWarningIconElement.textContent = "ℹ";
+    if (disableScreensaverBtn) disableScreensaverBtn.hidden = true;
+    if (restoreScreensaverBtn) restoreScreensaverBtn.hidden = false;
+    conflictWarningElement.hidden = false;
+    return;
+  }
+
+  // State 3: nothing to show.
+  conflictWarningElement.hidden = true;
+}
+
 // ── Preview ────────────────────────────────────────────────────────────────
 
 async function previewScreensaver(): Promise<void> {
@@ -382,6 +496,16 @@ window.addEventListener("DOMContentLoaded", () => {
   cacheUIElements();
   setupUIButtonHandlers();
 
+  // Show the real app version in the footer (compiled from Cargo.toml)
+  invoke<string>("get_app_version")
+    .then((v) => {
+      const el = document.getElementById("app-version");
+      if (el) el.textContent = `v${v}`;
+    })
+    .catch(() => {
+      /* leave the fallback text */
+    });
+
   // Reactive effects — each fires immediately then whenever the signal changes
 
   options.effect((opts) => {
@@ -404,7 +528,14 @@ window.addEventListener("DOMContentLoaded", () => {
 
     // Update app identity (title, h1, subtitle, about)
     setIdentity(opts);
+
+    // Re-evaluate OS screensaver conflict (severity depends on startsIn)
+    void checkScreensaverConflict();
   });
+
+  // Re-check when the window regains focus — the user may have changed the OS
+  // screensaver setting in System Settings while the options window was open.
+  window.addEventListener("focus", () => void checkScreensaverConflict());
 
   isActive.effect((active) => {
     if (!statusDotElement || !statusTextElement) return;

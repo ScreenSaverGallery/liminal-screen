@@ -35,6 +35,11 @@ fn init_env() {
 const OPTIONS_LABEL: &str = "options";
 /// Main window label
 const MAIN_WINDOW_LABEL: &str = "main";
+/// Store key: the user's OS screensaver idle timeout, saved when Liminal
+/// disables it so it can be restored. Presence also means "Liminal disabled it".
+const OS_SCREENSAVER_PREV_KEY: &str = "osScreensaverPrevIdle";
+/// Store key: set once the first-run options window has been shown.
+const ONBOARDED_KEY: &str = "onboarded";
 
 /// Read a VITE_* setting: runtime environment first (dev, where dotenv loads
 /// ../.env), then the value baked in at compile time (release builds — a
@@ -167,13 +172,13 @@ impl Default for AppOptions {
             app_description: env_setting!("VITE_APP_DESCRIPTION").unwrap_or_default(),
             starts_in: env_setting!("VITE_DEFAULT_STARTS_IN")
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(0.2),
+                .unwrap_or(4.0),
             display_off_in: env_setting!("VITE_DEFAULT_DISPLAY_OFF_IN")
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(1.0),
+                .unwrap_or(8.0),
             require_pass_in: env_setting!("VITE_DEFAULT_REQUIRE_PASS_IN")
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(1.0),
+                .unwrap_or(0.0),
             run_on_battery: env_setting!("VITE_DEFAULT_RUN_ON_BATTERY")
                 .map(|s| s == "true")
                 .unwrap_or(false),
@@ -279,6 +284,26 @@ fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::err
 
     // Start remote notification feed polling (exits immediately when no URL is configured)
     notification_service::start_notification_service(app.handle().clone());
+
+    // First-run onboarding: surface the options window once so the user discovers
+    // the settings and the screensaver-conflict prompt. Gated on a persisted flag
+    // so login-autostart launches stay silent; factory_reset clears it, so a reset
+    // makes the next launch behave like a fresh install.
+    let onboarded = app
+        .store("options.json")
+        .ok()
+        .and_then(|s| s.get(ONBOARDED_KEY))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !onboarded {
+        if let Err(e) = open_options_or_fallback(app.handle()) {
+            eprintln!("[onboarding] Could not open options on first run: {}", e);
+        }
+        if let Ok(store) = app.store("options.json") {
+            store.set(ONBOARDED_KEY, true);
+            let _ = store.save();
+        }
+    }
 
     Ok(())
 }
@@ -400,7 +425,9 @@ fn build_init_script(options: &AppOptions) -> String {
     let version = env!("CARGO_PKG_VERSION");
     let json = serde_json::to_string(options).unwrap_or_else(|_| "{}".to_string());
     // U+2028/U+2029 are valid JSON but rejected inside JS source by pre-ES2019 parsers
-    let json = json.replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029");
+    let json = json
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
     format!(
         "(function(){{\
             var o={json};\
@@ -536,6 +563,16 @@ fn factory_reset_options<R: Runtime>(
     let store = app
         .store("options.json")
         .map_err(|e| format!("Failed to open store: {}", e))?;
+    // Undo anything Liminal changed on the system so a reset truly matches a
+    // fresh install: restore the OS screensaver if we had disabled it. (clear()
+    // below also wipes the onboarding flag, so the next launch re-onboards.)
+    if let Some(prev) = store.get(OS_SCREENSAVER_PREV_KEY).and_then(|v| v.as_u64()) {
+        if prev > 0 {
+            if let Err(e) = power_monitor::set_os_screensaver_idle_direct(prev) {
+                eprintln!("[reset] Could not restore OS screensaver: {}", e);
+            }
+        }
+    }
     store.clear();
     store.set("instanceId", default_options.instance_id.clone());
     store
@@ -642,6 +679,63 @@ fn set_options<R: Runtime>(
     let _ = app.emit("options-updated", new_options);
 
     Ok(())
+}
+
+/// Disable the OS-native screensaver so it can't appear over Liminal. Saves the
+/// current timeout first so it can be restored (see `restore_os_screensaver`).
+#[tauri::command]
+fn disable_os_screensaver<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let status = power_monitor::get_os_screensaver_status()?;
+    power_monitor::set_os_screensaver_disabled_direct()?;
+
+    // Remember the prior timeout only when it was actually enabled — this also
+    // marks "Liminal disabled it" for the Restore affordance.
+    if status.detected {
+        if let Some(prev) = status.idle_seconds.filter(|s| *s > 0) {
+            if let Ok(store) = app.store("options.json") {
+                store.set(OS_SCREENSAVER_PREV_KEY, prev);
+                let _ = store.save();
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Restore the OS-native screensaver to the timeout saved by
+/// `disable_os_screensaver`, then clear the saved value.
+#[tauri::command]
+fn restore_os_screensaver<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let store = app
+        .store("options.json")
+        .map_err(|e| format!("Failed to open store: {}", e))?;
+    let prev = store.get(OS_SCREENSAVER_PREV_KEY).and_then(|v| v.as_u64());
+
+    match prev.filter(|s| *s > 0) {
+        Some(secs) => {
+            power_monitor::set_os_screensaver_idle_direct(secs)?;
+            store.delete(OS_SCREENSAVER_PREV_KEY);
+            let _ = store.save();
+            Ok(())
+        }
+        None => Err("No saved system screensaver setting to restore".into()),
+    }
+}
+
+/// The OS screensaver timeout Liminal saved when it disabled the screensaver,
+/// or null if Liminal hasn't disabled it. Drives the "Restore" affordance.
+#[tauri::command]
+fn get_saved_os_screensaver_idle<R: Runtime>(app: AppHandle<R>) -> Result<Option<u64>, String> {
+    Ok(app
+        .store("options.json")
+        .ok()
+        .and_then(|s| s.get(OS_SCREENSAVER_PREV_KEY))
+        .and_then(|v| v.as_u64()))
+}
+
+/// Return the running application version (compiled from Cargo.toml).
+#[tauri::command]
+fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 /// Command to get screensaver engine status
@@ -800,6 +894,7 @@ pub fn run() {
             get_options,
             set_options,
             factory_reset_options,
+            get_app_version,
             create_preview_window,
             evaluate_javascript,
             open_options,
@@ -811,6 +906,9 @@ pub fn run() {
             acquire_app_power_blocker,
             release_app_power_blocker,
             get_screensaver_status,
+            disable_os_screensaver,
+            restore_os_screensaver,
+            get_saved_os_screensaver_idle,
             activate_screensaver_command,
             deactivate_screensaver_command,
             speech::speak_text,
@@ -819,6 +917,7 @@ pub fn run() {
             power_monitor::get_system_idle_time,
             power_monitor::get_system_idle_state,
             power_monitor::is_on_battery_power,
+            power_monitor::get_os_screensaver_status,
             power_monitor::lock_screen,
             power_monitor::blank_screen,
             power_monitor::prevent_display_sleep,
