@@ -13,6 +13,8 @@ The Liminal Screen API lets remote options pages communicate with the Tauri back
 - **Reactive store**: `createOptionsStore()` provides a `Signal`-based reactive state with auto-polling sync
 - **Native dialogs**: `ask()` and `showMessage()` use Tauri's dialog plugin when available, fall back to `confirm()`/`alert()`
 - **Event sync**: `startAutoSync()` pushes real-time option updates from the backend
+- **System screensaver control**: detect a conflicting OS screensaver and disable/restore it so Liminal is the only screensaver
+- **App version**: `getVersion()` returns the running application version
 - **Zero dependencies**: No `@tauri-apps/api` needed — uses `window.__TAURI__` globals directly
 
 ## Installation
@@ -87,6 +89,32 @@ await liminalAPI.resetOptions();
 await liminalAPI.showMessage('Settings saved!', { title: 'Saved', kind: 'info' });
 ```
 
+### System screensaver conflict
+
+Liminal is meant to be the *only* screensaver — a system screensaver on an overlapping timer draws over Liminal. Detect one and offer to disable it (the prior timeout is saved so it can be restored):
+
+```javascript
+const os = await liminalAPI.getOsScreensaverStatus();
+if (os.detected && os.enabled) {
+  // e.g. os.idleSeconds === 60 → the OS screensaver starts after 1 minute
+  if (await liminalAPI.ask('Your system screensaver may appear over Liminal. Disable it?')) {
+    await liminalAPI.disableOsScreensaver();
+  }
+}
+
+// Offer to undo it later — non-null means Liminal disabled it:
+const saved = await liminalAPI.getSavedOsScreensaverIdle();
+if (saved != null) {
+  await liminalAPI.restoreOsScreensaver();
+}
+```
+
+### App version
+
+```javascript
+document.getElementById('version').textContent = `v${await liminalAPI.getVersion()}`;
+```
+
 ## API Reference
 
 ### `liminalAPI` — singleton instance
@@ -97,6 +125,11 @@ await liminalAPI.showMessage('Settings saved!', { title: 'Saved', kind: 'info' }
 | `setOptions(payload)` | `Promise<void>` | Save user options (identity fields preserved) |
 | `resetOptions()` | `Promise<AppOptions>` | Reset to `.env` defaults |
 | `previewScreensaver()` | `Promise<void>` | Trigger a screensaver preview |
+| `getVersion()` | `Promise<string>` | Running app version (e.g. `"0.1.5"`) |
+| `getOsScreensaverStatus()` | `Promise<OsScreensaverStatus>` | Read the OS-native screensaver config (conflict detection) |
+| `disableOsScreensaver()` | `Promise<void>` | Disable the OS screensaver so it can't cover Liminal (prior value saved) |
+| `restoreOsScreensaver()` | `Promise<void>` | Restore the OS screensaver to the saved value |
+| `getSavedOsScreensaverIdle()` | `Promise<number \| null>` | Saved OS timeout (seconds) if Liminal disabled it, else `null` |
 | `ask(message, options?)` | `Promise<boolean>` | Confirmation dialog (falls back to `confirm()`) |
 | `showMessage(message, options?)` | `Promise<void>` | Message dialog (falls back to `alert()`) |
 | `startAutoSync(callback)` | `Promise<() => void>` | Subscribe to real-time option updates |
@@ -129,6 +162,16 @@ interface MandatoryOptions {
 }
 
 type CustomOptions = Record<string, string | number | boolean>;
+```
+
+### `OsScreensaverStatus` type
+
+```typescript
+interface OsScreensaverStatus {
+  detected: boolean;          // Could the setting be read on this platform/desktop?
+  enabled: boolean;           // Is the OS screensaver set to activate on a timer?
+  idleSeconds: number | null; // Idle seconds before it starts; null if disabled/unknown
+}
 ```
 
 ## Documentation

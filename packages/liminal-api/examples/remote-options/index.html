@@ -91,6 +91,23 @@
     #status-bar .dot.connected { background: #81c995; }
 
     #custom-fields { /* populated by JS */ }
+
+    .conflict {
+      display: flex; align-items: flex-start; gap: 10px;
+      background: rgba(245,158,11,0.12);
+      border: 1px solid #f59e0b;
+      border-radius: var(--radius);
+      padding: 10px 12px; margin-bottom: 24px;
+      font-size: 13px; line-height: 1.4;
+    }
+    .conflict.is-info { background: rgba(109,158,235,0.12); border-color: var(--accent); }
+    .conflict .icon { color: #f59e0b; line-height: 1.4; }
+    .conflict.is-info .icon { color: var(--accent); }
+    .conflict .body { display: flex; flex-direction: column; gap: 8px; flex: 1; }
+    .conflict .conflict-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .conflict button { padding: 5px 10px; font-size: 12px; background: #f59e0b; color: #1a1a1a; }
+    .conflict.is-info button { background: var(--accent); color: #000; }
+    .conflict [hidden] { display: none; }
   </style>
 </head>
 <body>
@@ -100,6 +117,17 @@
   </header>
 
   <main>
+    <div class="conflict" id="ss-conflict" role="alert" hidden>
+      <span class="icon" id="ss-conflict-icon" aria-hidden="true">⚠</span>
+      <div class="body">
+        <span id="ss-conflict-text"></span>
+        <div class="conflict-actions">
+          <button type="button" id="ss-disable-btn" hidden>Disable system screensaver</button>
+          <button type="button" id="ss-restore-btn" hidden>Restore system screensaver</button>
+        </div>
+      </div>
+    </div>
+
     <div class="section">
       <h2>Timing</h2>
       <div class="field">
@@ -148,6 +176,7 @@
   <div id="status-bar">
     <span class="dot" id="status-dot"></span>
     <span id="status-text">Connecting…</span>
+    <span id="app-version" style="margin-left: auto; color: var(--muted);"></span>
   </div>
 
   <!-- Register service worker for offline support -->

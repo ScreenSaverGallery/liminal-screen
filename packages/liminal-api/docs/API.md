@@ -93,6 +93,23 @@ Fork-defined key/value pairs appended to the screensaver URL as query parameters
 type CustomOptions = Record<string, string | number | boolean>;
 ```
 
+### `OsScreensaverStatus`
+
+Snapshot of the OS-native screensaver configuration, returned by `getOsScreensaverStatus()`:
+
+```typescript
+interface OsScreensaverStatus {
+  /** Whether the setting could be read on this platform/desktop */
+  detected: boolean;
+  /** True when the OS screensaver is set to activate on an idle timer */
+  enabled: boolean;
+  /** Idle seconds before the OS screensaver starts; null when disabled/unknown */
+  idleSeconds: number | null;
+}
+```
+
+Detection is solid on macOS; Windows and Linux (GNOME) are best-effort and report `detected: false` when the setting can't be read.
+
 ## `LiminalAPI` Class
 
 ### `getOptions(): Promise<AppOptions>`
@@ -129,6 +146,52 @@ const defaults = await liminalAPI.resetOptions();
 ### `previewScreensaver(): Promise<void>`
 
 Trigger a preview of the screensaver. No-op in non-Tauri environments.
+
+### `getVersion(): Promise<string>`
+
+The running application version (e.g. `"0.1.5"`). Reads the injected `navigator.liminalScreen.version` snapshot when present (no IPC), otherwise asks the backend. Returns an empty string outside Tauri.
+
+```javascript
+document.getElementById('version').textContent = `v${await liminalAPI.getVersion()}`;
+```
+
+### `getOsScreensaverStatus(): Promise<OsScreensaverStatus>`
+
+Read the OS-native screensaver configuration. Liminal is meant to be the *only* screensaver — a system screensaver on an overlapping timer draws over Liminal — so use this to detect a conflict and warn the user. In non-Tauri environments returns `{ detected: false, enabled: false, idleSeconds: null }`.
+
+```javascript
+const os = await liminalAPI.getOsScreensaverStatus();
+if (os.detected && os.enabled) {
+  console.log(`OS screensaver starts after ${os.idleSeconds}s`);
+}
+```
+
+### `disableOsScreensaver(): Promise<void>`
+
+Disable the OS-native screensaver so it can't appear over Liminal. The current timeout is saved first, so the change can be reversed with `restoreOsScreensaver()`. No-op (logs) outside Tauri.
+
+- **macOS**: `defaults -currentHost write com.apple.screensaver idleTime 0` + `killall cfprefsd`
+- **Windows**: `SystemParametersInfoW(SPI_SETSCREENSAVEACTIVE, FALSE)` (best-effort)
+- **Linux**: `gsettings set org.gnome.desktop.session idle-delay 0` (GNOME, best-effort)
+
+```javascript
+await liminalAPI.disableOsScreensaver();
+```
+
+### `restoreOsScreensaver(): Promise<void>`
+
+Restore the OS-native screensaver to the timeout saved by `disableOsScreensaver()`, then clear the saved value. Throws if there's nothing saved to restore.
+
+### `getSavedOsScreensaverIdle(): Promise<number | null>`
+
+The OS screensaver timeout (seconds) Liminal saved when it disabled the screensaver, or `null` if Liminal hasn't disabled it. A non-null value means "Liminal disabled it" — use it to decide whether to show a **Restore** affordance.
+
+```javascript
+const saved = await liminalAPI.getSavedOsScreensaverIdle();
+if (saved != null) {
+  // Liminal disabled the OS screensaver (was `saved` seconds) — offer to restore
+}
+```
 
 ### `ask(message: string, options?: Record<string, unknown>): Promise<boolean>`
 

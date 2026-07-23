@@ -9,7 +9,12 @@
  *   import { liminalAPI, createOptionsStore } from '@liminal-screen/api';
  */
 
-import type { AppOptions, CustomOptions, SetOptionsPayload } from '../../src/types';
+import type {
+  AppOptions,
+  CustomOptions,
+  SetOptionsPayload,
+  OsScreensaverStatus,
+} from '../../src/types';
 import { createOptionsStore } from '../../src/store';
 
 // Access the singleton from the global IIFE bundle (CDN) or import directly (npm)
@@ -22,6 +27,11 @@ declare const LiminalAPI: {
     startAutoSync(cb: (o: AppOptions) => void): Promise<() => void>;
     ask(message: string, options?: Record<string, unknown>): Promise<boolean>;
     showMessage(message: string, options?: Record<string, unknown>): Promise<void>;
+    getVersion(): Promise<string>;
+    getOsScreensaverStatus(): Promise<OsScreensaverStatus>;
+    disableOsScreensaver(): Promise<void>;
+    restoreOsScreensaver(): Promise<void>;
+    getSavedOsScreensaverIdle(): Promise<number | null>;
     isInTauri: boolean;
   };
   createOptionsStore: typeof createOptionsStore;
@@ -62,6 +72,19 @@ const runOnBattery = $('run-on-battery') as HTMLInputElement;
 const debugMode    = $('debug-mode')     as HTMLInputElement;
 const statusDot    = $('status-dot')!;
 const statusText   = $('status-text')!;
+const conflictEl   = $('ss-conflict')!;
+const conflictText = $('ss-conflict-text')!;
+const conflictIcon = $('ss-conflict-icon')!;
+const disableBtn   = $('ss-disable-btn') as HTMLButtonElement;
+const restoreBtn   = $('ss-restore-btn') as HTMLButtonElement;
+const versionEl    = $('app-version');
+
+function formatSeconds(secs: number): string {
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return s ? `${m}m ${s}s` : `${m}m`;
+}
 
 // ── Custom fields ─────────────────────────────────────────────────────────────
 
@@ -156,6 +179,48 @@ async function init(): Promise<void> {
 
   const store = createOptionsStore(api);
 
+  // Show the real app version in the status bar.
+  api.getVersion().then((v) => { if (versionEl && v) versionEl.textContent = `v${v}`; }).catch(() => {});
+
+  /**
+   * Detect a conflicting OS screensaver and offer to disable/restore it.
+   * States: enabled → warning + Disable; disabled-by-Liminal → info + Restore; else hidden.
+   */
+  async function checkConflict(): Promise<void> {
+    const [os, saved] = await Promise.all([
+      api.getOsScreensaverStatus(),
+      api.getSavedOsScreensaverIdle(),
+    ]);
+
+    if (os.detected && os.enabled) {
+      const startsInSecs = (parseFloat(startsIn.value) || 0) * 60;
+      const firesFirst = os.idleSeconds != null && os.idleSeconds <= startsInSecs;
+      const timing = os.idleSeconds != null ? ` (starts after ${formatSeconds(os.idleSeconds)})` : '';
+      conflictText.textContent = firesFirst
+        ? `Your system screensaver${timing} starts before Liminal and will appear on top of it. Liminal works best as your only screensaver.`
+        : `Your system screensaver is enabled${timing} and may appear on top of Liminal. Liminal works best as your only screensaver.`;
+      conflictEl.classList.remove('is-info');
+      conflictIcon.textContent = '⚠';
+      disableBtn.hidden = false;
+      restoreBtn.hidden = true;
+      conflictEl.hidden = false;
+      return;
+    }
+
+    if (saved != null && saved > 0) {
+      conflictText.textContent =
+        `Liminal disabled your system screensaver (was ${formatSeconds(saved)}) so it won't appear over Liminal.`;
+      conflictEl.classList.add('is-info');
+      conflictIcon.textContent = 'ℹ';
+      disableBtn.hidden = true;
+      restoreBtn.hidden = false;
+      conflictEl.hidden = false;
+      return;
+    }
+
+    conflictEl.hidden = true;
+  }
+
   // Single reactive effect — fires on load + every backend update + reset
   store.signal.effect((opts) => {
     if (!opts) return;
@@ -173,6 +238,22 @@ async function init(): Promise<void> {
       if (def.type === 'checkbox') el.checked = Boolean(val);
       else el.value = String(val);
     }
+
+    void checkConflict();
+  });
+
+  // Re-check when the window regains focus (user may change OS settings elsewhere).
+  window.addEventListener('focus', () => void checkConflict());
+
+  disableBtn.addEventListener('click', async () => {
+    try { await api.disableOsScreensaver(); }
+    catch (e) { await api.showMessage(`Could not disable the system screensaver: ${e}`, { title: 'System Screensaver', kind: 'error' }); }
+    await checkConflict();
+  });
+  restoreBtn.addEventListener('click', async () => {
+    try { await api.restoreOsScreensaver(); }
+    catch (e) { await api.showMessage(`Could not restore the system screensaver: ${e}`, { title: 'System Screensaver', kind: 'error' }); }
+    await checkConflict();
   });
 
   setStatus(api.isInTauri, api.isInTauri ? 'Connected' : 'Preview mode (not in Tauri)');

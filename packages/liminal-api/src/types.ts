@@ -60,6 +60,21 @@ export interface AppOptions extends MandatoryOptions {
 export type SetOptionsPayload = MandatoryOptions & { customOptions?: CustomOptions };
 
 /**
+ * OS-native screensaver configuration, as returned by getOsScreensaverStatus().
+ * Liminal is meant to be the only screensaver — a system screensaver on an
+ * overlapping timer draws over Liminal, so the options page can warn about it
+ * and offer to disable it.
+ */
+export interface OsScreensaverStatus {
+  /** Whether the setting could be read on this platform/desktop. */
+  detected: boolean;
+  /** True when the OS screensaver is set to activate on an idle timer. */
+  enabled: boolean;
+  /** Idle seconds before the OS screensaver starts; null when disabled/unknown. */
+  idleSeconds: number | null;
+}
+
+/**
  * Info about an available application update, as returned by
  * checkForUpdates() and delivered by the `update-available` event.
  */

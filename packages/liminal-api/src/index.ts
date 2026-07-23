@@ -21,8 +21,14 @@ export type {
   CustomOptions,
   SetOptionsPayload,
   UpdateInfo,
+  OsScreensaverStatus,
 } from './types';
-import type { AppOptions, SetOptionsPayload, UpdateInfo } from './types';
+import type {
+  AppOptions,
+  SetOptionsPayload,
+  UpdateInfo,
+  OsScreensaverStatus,
+} from './types';
 
 export { Signal } from './reactive';
 export { createOptionsStore } from './store';
@@ -168,6 +174,82 @@ export class LiminalAPI {
       await invoke('preview_screensaver');
     } catch (e) {
       throw new LiminalAPIError('Failed to preview screensaver', e);
+    }
+  }
+
+  /**
+   * The running application version. Reads the injected navigator.liminalScreen
+   * snapshot when present (zero IPC), else asks the backend. Empty outside Tauri.
+   */
+  async getVersion(): Promise<string> {
+    const injected = (window as any)?.navigator?.liminalScreen?.version;
+    if (typeof injected === 'string' && injected) return injected;
+    const invoke = tauriInvoke();
+    if (!invoke) return '';
+    try {
+      return (await invoke('get_app_version')) as string;
+    } catch (e) {
+      throw new LiminalAPIError('Failed to get app version', e);
+    }
+  }
+
+  /**
+   * Read the OS-native screensaver configuration to detect conflicts with
+   * Liminal. In non-Tauri environments reports "not detected".
+   */
+  async getOsScreensaverStatus(): Promise<OsScreensaverStatus> {
+    const invoke = tauriInvoke();
+    if (!invoke) return { detected: false, enabled: false, idleSeconds: null };
+    try {
+      return (await invoke('get_os_screensaver_status')) as OsScreensaverStatus;
+    } catch (e) {
+      throw new LiminalAPIError('Failed to get OS screensaver status', e);
+    }
+  }
+
+  /**
+   * Disable the OS-native screensaver so it can't appear over Liminal. The
+   * prior timeout is saved so it can be restored (see restoreOsScreensaver).
+   */
+  async disableOsScreensaver(): Promise<void> {
+    const invoke = tauriInvoke();
+    if (!invoke) {
+      console.log('[liminal-api] mock disableOsScreensaver');
+      return;
+    }
+    try {
+      await invoke('disable_os_screensaver');
+    } catch (e) {
+      throw new LiminalAPIError('Failed to disable OS screensaver', e);
+    }
+  }
+
+  /** Restore the OS-native screensaver to the timeout saved when it was disabled. */
+  async restoreOsScreensaver(): Promise<void> {
+    const invoke = tauriInvoke();
+    if (!invoke) {
+      console.log('[liminal-api] mock restoreOsScreensaver');
+      return;
+    }
+    try {
+      await invoke('restore_os_screensaver');
+    } catch (e) {
+      throw new LiminalAPIError('Failed to restore OS screensaver', e);
+    }
+  }
+
+  /**
+   * The OS screensaver timeout (seconds) Liminal saved when it disabled the
+   * screensaver, or null if Liminal hasn't disabled it. Drives the "Restore"
+   * affordance on the options page.
+   */
+  async getSavedOsScreensaverIdle(): Promise<number | null> {
+    const invoke = tauriInvoke();
+    if (!invoke) return null;
+    try {
+      return ((await invoke('get_saved_os_screensaver_idle')) as number | null) ?? null;
+    } catch (e) {
+      throw new LiminalAPIError('Failed to get saved OS screensaver setting', e);
     }
   }
 
