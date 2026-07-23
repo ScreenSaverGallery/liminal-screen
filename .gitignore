@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Compiled example output (built from main.ts via `bun run build`)
+packages/liminal-api/examples/remote-options/main.js
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
