@@ -91,6 +91,13 @@ function main(): void {
     patch.plugins = { updater: updaterPatch };
   }
 
+  if (!env.VITE_SAVER_URL) {
+    console.error(
+      "[build-tauri-config] ERROR: VITE_SAVER_URL is missing from .env — the release binary would ship with about:blank as the saver URL.",
+    );
+    process.exit(1);
+  }
+
   writeFileSync(OUT_PATH, JSON.stringify(patch, null, 2) + "\n");
 
   const keys = Object.keys(patch);

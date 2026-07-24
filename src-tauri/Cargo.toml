@@ -49,3 +49,6 @@ core-foundation = "0.10"
 # Must match the webkit2gtk major/features used by tauri itself so the
 # WebView type returned by PlatformWebview::inner() unifies.
 webkit2gtk = { version = "2", features = ["v2_40"] }
+# Pure-Rust D-Bus client: avoids host GIO/dbus-send compatibility issues in
+# AppImage and other bundled environments.
+zbus = { version = "5", features = ["tokio"] }

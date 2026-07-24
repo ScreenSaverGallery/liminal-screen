@@ -12,9 +12,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "tauri": "tauri",
-    "tauri:dev": "bun run scripts/build-tauri-config.ts && tauri dev --config src-tauri/.tauri-runtime.conf.json",
+    "tauri:dev": "set -a && . ./.env && set +a && bun run scripts/build-tauri-config.ts && tauri dev --config src-tauri/.tauri-runtime.conf.json",
     "tauri:dev:x11": "GDK_BACKEND=x11 bun run tauri:dev",
-    "tauri:build": "bun run scripts/build-tauri-config.ts && tauri build --config src-tauri/.tauri-runtime.conf.json",
+    "tauri:build": "set -a && . ./.env && set +a && bun run scripts/build-tauri-config.ts && tauri build --no-sign --config src-tauri/.tauri-runtime.conf.json",
     "tauri:release": "bun run scripts/release.ts"
   },
   "dependencies": {

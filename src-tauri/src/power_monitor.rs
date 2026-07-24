@@ -720,44 +720,71 @@ fn idle_xprintidle() -> Option<u64> {
 /// GNOME (X11 + Wayland): Mutter IdleMonitor, returns milliseconds as uint64.
 #[cfg(target_os = "linux")]
 fn idle_mutter_dbus() -> Option<u64> {
-    let output = std::process::Command::new("dbus-send")
-        .args([
-            "--session",
-            "--print-reply=literal",
-            "--dest=org.gnome.Mutter.IdleMonitor",
+    block_on_zbus(async {
+        let conn = zbus::Connection::session().await?;
+        let proxy = zbus::Proxy::new(
+            &conn,
+            "org.gnome.Mutter.IdleMonitor",
             "/org/gnome/Mutter/IdleMonitor/Core",
-            "org.gnome.Mutter.IdleMonitor.GetIdletime",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    // Reply looks like: "   uint64 123456"
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let ms = stdout.split_whitespace().last()?.parse::<u64>().ok()?;
-    Some(ms / 1000)
+            "org.gnome.Mutter.IdleMonitor",
+        )
+        .await?;
+        proxy.call_method("GetIdletime", &()).await?.body().deserialize::<u64>()
+    })
+    .map(|ms| ms / 1000)
 }
 
 /// KDE and others implementing org.freedesktop.ScreenSaver.GetSessionIdleTime
 /// (returns seconds as uint32). GNOME does not implement this method.
 #[cfg(target_os = "linux")]
 fn idle_fdo_screensaver_dbus() -> Option<u64> {
-    let output = std::process::Command::new("dbus-send")
-        .args([
-            "--session",
-            "--print-reply=literal",
-            "--dest=org.freedesktop.ScreenSaver",
+    block_on_zbus(async {
+        let conn = zbus::Connection::session().await?;
+        let proxy = zbus::Proxy::new(
+            &conn,
+            "org.freedesktop.ScreenSaver",
             "/ScreenSaver",
-            "org.freedesktop.ScreenSaver.GetSessionIdleTime",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+            "org.freedesktop.ScreenSaver",
+        )
+        .await?;
+        proxy
+            .call_method("GetSessionIdleTime", &())
+            .await?
+            .body()
+            .deserialize::<u32>()
+            .map(u64::from)
+    })
+}
+
+/// Run a zbus async block on the current thread. zbus is async-first; this is
+/// acceptable because these calls are short local D-Bus round-trips.
+#[cfg(target_os = "linux")]
+fn block_on_zbus<T, F>(future: F) -> Option<T>
+where
+    F: std::future::Future<Output = Result<T, zbus::Error>>,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => match handle.block_on(future) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                println!("zbus call failed: {}", e);
+                None
+            }
+        },
+        Err(_) => match tokio::runtime::Runtime::new() {
+            Ok(rt) => match rt.block_on(future) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    println!("zbus call failed: {}", e);
+                    None
+                }
+            },
+            Err(e) => {
+                println!("Failed to create tokio runtime for zbus: {}", e);
+                None
+            }
+        },
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.split_whitespace().last()?.parse::<u64>().ok()
 }
 
 #[cfg(target_os = "linux")]
@@ -795,20 +822,12 @@ fn is_on_battery_linux() -> Result<bool, String> {
 
 #[cfg(target_os = "linux")]
 fn lock_screen_linux() -> Result<(), String> {
-    // loginctl works on both X11 and Wayland under systemd-logind; the D-Bus
-    // ScreenSaver interface covers KDE and most desktops; the rest are legacy.
+    // loginctl works on both X11 and Wayland under systemd-logind.
     if run_ok("loginctl", &["lock-session"]) {
         return Ok(());
     }
-    if run_ok(
-        "dbus-send",
-        &[
-            "--session",
-            "--dest=org.freedesktop.ScreenSaver",
-            "/ScreenSaver",
-            "org.freedesktop.ScreenSaver.Lock",
-        ],
-    ) {
+    // Pure-Rust D-Bus lock via org.freedesktop.ScreenSaver.
+    if lock_screen_fdo_dbus().is_ok() {
         return Ok(());
     }
     if run_ok("xdg-screensaver", &["lock"]) {
@@ -819,6 +838,22 @@ fn lock_screen_linux() -> Result<(), String> {
     }
 
     Err("Failed to lock screen: no compatible command found".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn lock_screen_fdo_dbus() -> Result<(), String> {
+    block_on_zbus(async {
+        let conn = zbus::Connection::session().await?;
+        let proxy = zbus::Proxy::new(
+            &conn,
+            "org.freedesktop.ScreenSaver",
+            "/ScreenSaver",
+            "org.freedesktop.ScreenSaver",
+        )
+        .await?;
+        proxy.call_method("Lock", &()).await.map(|_| ())
+    })
+    .ok_or_else(|| "D-Bus ScreenSaver.Lock failed".to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -857,28 +892,28 @@ fn blank_screen_linux() -> Result<(), String> {
 /// Set Mutter's PowerSaveMode property (0 = on, 1 = off / blanked).
 #[cfg(target_os = "linux")]
 fn set_mutter_power_save_mode(mode: i32) -> Result<(), String> {
-    let output = std::process::Command::new("dbus-send")
-        .args([
-            "--session",
-            "--print-reply",
-            "--dest=org.gnome.Mutter.DisplayConfig",
+    block_on_zbus(async {
+        let conn = zbus::Connection::session().await?;
+        let proxy = zbus::Proxy::new(
+            &conn,
+            "org.gnome.Mutter.DisplayConfig",
             "/org/gnome/Mutter/DisplayConfig",
-            "org.freedesktop.DBus.Properties.Set",
-            "string:org.gnome.Mutter.DisplayConfig",
-            "string:PowerSaveMode",
-            &format!("variant:int32:{}", mode),
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run dbus-send: {}", e))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "dbus-send Set PowerSaveMode failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    Ok(())
+            "org.freedesktop.DBus.Properties",
+        )
+        .await?;
+        proxy
+            .call_method(
+                "Set",
+                &(
+                    "org.gnome.Mutter.DisplayConfig",
+                    "PowerSaveMode",
+                    zbus::zvariant::Value::I32(mode),
+                ),
+            )
+            .await
+            .map(|_| ())
+    })
+    .ok_or_else(|| "Failed to set Mutter PowerSaveMode".to_string())
 }
 
 #[cfg(target_os = "linux")]
