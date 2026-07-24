@@ -410,7 +410,13 @@ impl ScreensaverEngine {
             }
             self.close_all_savers(app)?;
         }
-        // For DisplayOff and Locked states: OS handles display/unlock, just reset state
+        // For DisplayOff and Locked states: OS handles display/unlock, just reset state.
+        // On GNOME/Mutter we must explicitly unblank because we forced PowerSaveMode on.
+        if current_state == ScreensaverState::DisplayOff {
+            if let Err(e) = super::power_monitor::unblank_screen() {
+                println!("Warning: Failed to unblank display: {}", e);
+            }
+        }
 
         self.set_state(ScreensaverState::Idle);
         let _ = app.emit("screensaver-ended", ());

@@ -195,6 +195,23 @@ pub fn blank_screen() -> Result<(), String> {
     return blank_screen_linux();
 }
 
+/// Reverse a forced blank. On Linux this resets Mutter PowerSaveMode; on other
+/// platforms the OS wakes the display on user input, so this is a no-op.
+pub fn unblank_screen() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        if let Err(e) = set_mutter_power_save_mode(0) {
+            println!("Mutter unblank not available: {}", e);
+            return Err(e);
+        }
+        println!("Linux: Display unblanked via Mutter PowerSaveMode");
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    Ok(())
+}
+
 #[command]
 pub fn prevent_display_sleep<R: Runtime>(
     _app: AppHandle<R>,
@@ -806,29 +823,62 @@ fn lock_screen_linux() -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn blank_screen_linux() -> Result<(), String> {
-    // X11: xset DPMS. Wayland: kscreen-doctor covers KDE; GNOME Wayland has no
-    // stable CLI for forcing DPMS off, so we fall back to screensaver activation.
-    let commands: &[(&str, &[&str])] = if is_wayland_session() {
-        &[
-            ("kscreen-doctor", &["--dpms", "off"]),
-            ("xset", &["dpms", "force", "off"]), // XWayland, best effort
-            ("xdg-screensaver", &["activate"]),
-        ]
+    // GNOME/Mutter (X11 and Wayland): set PowerSaveMode to 1 to blank all
+    // displays immediately. This is the only reliable way to force DPMS off on
+    // GNOME Wayland, where XWayland's xset DPMS extension is a stub.
+    if let Err(e) = set_mutter_power_save_mode(1) {
+        println!("Mutter blank not available: {}", e);
     } else {
-        &[
-            ("xset", &["dpms", "force", "off"]),
-            ("xdg-screensaver", &["activate"]),
-            ("gnome-screensaver-command", &["-a"]),
-        ]
-    };
+        println!("Linux: Display blanked via Mutter PowerSaveMode");
+        return Ok(());
+    }
 
-    for (cmd, args) in commands {
-        if run_ok(cmd, args) {
-            return Ok(());
-        }
+    // KDE Wayland / Plasma.
+    if run_ok("kscreen-doctor", &["--dpms", "off"]) {
+        return Ok(());
+    }
+
+    // Native X11: real DPMS extension.
+    if run_ok("xset", &["dpms", "force", "off"]) {
+        return Ok(());
+    }
+
+    // Legacy screensaver activation (does NOT actually power off the panel).
+    if run_ok("xdg-screensaver", &["activate"]) {
+        return Ok(());
+    }
+    if run_ok("gnome-screensaver-command", &["-a"]) {
+        return Ok(());
     }
 
     Err("Failed to blank screen: no compatible command found".to_string())
+}
+
+/// Set Mutter's PowerSaveMode property (0 = on, 1 = off / blanked).
+#[cfg(target_os = "linux")]
+fn set_mutter_power_save_mode(mode: i32) -> Result<(), String> {
+    let output = std::process::Command::new("dbus-send")
+        .args([
+            "--session",
+            "--print-reply",
+            "--dest=org.gnome.Mutter.DisplayConfig",
+            "/org/gnome/Mutter/DisplayConfig",
+            "org.freedesktop.DBus.Properties.Set",
+            "string:org.gnome.Mutter.DisplayConfig",
+            "string:PowerSaveMode",
+            &format!("variant:int32:{}", mode),
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run dbus-send: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "dbus-send Set PowerSaveMode failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
