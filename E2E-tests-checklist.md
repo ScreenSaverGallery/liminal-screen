@@ -1,3 +1,4 @@
+## Checklist
 - [ ] autostart
 - [ ] open options at first start
 - [ ] open / close preview (from menu, from options)
@@ -13,3 +14,6 @@
 - [ ] multi-screen run
 ---
 - [ ] notifications
+
+## Notes
+> linux test on ubuntu, fedora, debian (kde, gnome)
