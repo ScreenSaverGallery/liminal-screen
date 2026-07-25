@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@liminal-screen/api": "^0.1.0"
+    "@liminal-screen/api": "^0.2.0"
   },
   "devDependencies": {
     "typescript": "^5.0.0"
