@@ -79,9 +79,11 @@ const MOCK_OPTIONS: AppOptions = {
   runOnBattery: false,
   debug: false,
   customOptions: {},
+  instanceId: '',
   notificationUrl: '',
   notificationCheckIntervalSecs: 3600,
   notificationsEnabled: false,
+  autostart: false,
 };
 
 // ── LiminalAPI ──────────────────────────────────────────────────────────────
@@ -149,6 +151,7 @@ export class LiminalAPI {
     if (dialog) {
       return dialog.ask(message, options);
     }
+    if (typeof window === 'undefined') return false;
     return window.confirm(message);
   }
 
@@ -160,6 +163,7 @@ export class LiminalAPI {
     if (dialog) {
       return dialog.message(message, options);
     }
+    if (typeof window === 'undefined') return;
     window.alert(message);
   }
 
@@ -182,7 +186,10 @@ export class LiminalAPI {
    * snapshot when present (zero IPC), else asks the backend. Empty outside Tauri.
    */
   async getVersion(): Promise<string> {
-    const injected = (window as any)?.navigator?.liminalScreen?.version;
+    const injected =
+      typeof window === 'undefined'
+        ? undefined
+        : (window as any).navigator?.liminalScreen?.version;
     if (typeof injected === 'string' && injected) return injected;
     const invoke = tauriInvoke();
     if (!invoke) return '';
