@@ -18,3 +18,4 @@
 - [x] remote options api (+ shared key), check, implement to remote secret
 - [x] implement custom app name and description
 - [x] remote options not loading (main index.html fallback)
+- [x] run on battery -> if false, no saver window, but display off should still fire
