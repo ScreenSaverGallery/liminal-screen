@@ -1,27 +1,39 @@
 {
   "name": "@liminal-screen/api",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "IPC bridge for Liminal Screen remote options pages. Works as npm package or CDN script.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "unpkg": "./dist/liminal-api.global.js",
+  "jsdelivr": "./dist/liminal-api.global.js",
+  "sideEffects": false,
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./global": "./dist/liminal-api.global.js",
+    "./package.json": "./package.json"
   },
   "files": [
-    "dist/**/*"
+    "dist/**/*",
+    "src/**/*.ts",
+    "!src/**/*.test.ts",
+    "docs/**/*.md",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "bun run build:esm && bun run build:iife && bun run build:types",
     "build:esm": "bun build src/index.ts --outfile=dist/index.js --format=esm --target=browser",
-    "build:iife": "bun build src/index.ts --outfile=dist/liminal-api.global.js --format=iife --target=browser",
+    "build:iife": "bun build src/global.ts --outfile=dist/liminal-api.global.js --format=iife --target=browser",
     "build:types": "tsc --emitDeclarationOnly --declarationMap --outDir dist",
     "dev": "tsc --watch --emitDeclarationOnly --declarationMap --outDir dist",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run typecheck && bun run build"
   },
   "keywords": [
     "liminal-screen",
@@ -30,8 +42,20 @@
     "ipc",
     "options"
   ],
-  "author": "",
+  "author": "tomaszatoo",
   "license": "MIT",
+  "homepage": "https://github.com/tomaszatoo/liminal-screen/tree/main/packages/liminal-api#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tomaszatoo/liminal-screen.git",
+    "directory": "packages/liminal-api"
+  },
+  "bugs": {
+    "url": "https://github.com/tomaszatoo/liminal-screen/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "@types/node": "^25.6.0",
     "typescript": "^5.0.0"
