@@ -772,6 +772,41 @@ fn deactivate_screensaver_command<R: Runtime>(
     state.deactivate_screensaver(&app)
 }
 
+/// Return the full screensaver state-machine state (Idle / ScreensaverActive /
+/// DisplayOff / Locked). Unlike `get_screensaver_status` (which collapses
+/// DisplayOff and Locked into `is_active = false`), this exposes the exact
+/// state — the assertion target for E2E tests of the
+/// idle → saver → display-off → lock chain.
+#[tauri::command]
+fn get_screensaver_state(
+    state: tauri::State<screensaver_engine::ScreensaverEngine>,
+) -> screensaver_engine::ScreensaverState {
+    state.get_state()
+}
+
+/// Test-only hook: override the idle time fed to the state machine so E2E tests
+/// can drive transitions deterministically without waiting real minutes. Pass a
+/// number of seconds to fake, or `null` to clear the override and resume real
+/// OS idle detection. Combined with `set_options` (small thresholds) and
+/// `get_screensaver_state`, this makes the whole chain scriptable.
+///
+/// Compiled to a no-op error in release builds so it can never ship.
+#[cfg(debug_assertions)]
+#[tauri::command]
+fn debug_set_idle(
+    secs: Option<f64>,
+    state: tauri::State<screensaver_engine::ScreensaverEngine>,
+) -> Result<(), String> {
+    state.set_idle_override(secs.map(|s| s.max(0.0) as u64));
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+#[tauri::command]
+fn debug_set_idle() -> Result<(), String> {
+    Err("debug_set_idle is only available in debug builds".to_string())
+}
+
 /// Command to get active saver window labels
 #[tauri::command]
 fn get_active_savers(state: tauri::State<AppState>) -> Result<Vec<String>, String> {
@@ -906,6 +941,8 @@ pub fn run() {
             acquire_app_power_blocker,
             release_app_power_blocker,
             get_screensaver_status,
+            get_screensaver_state,
+            debug_set_idle,
             disable_os_screensaver,
             restore_os_screensaver,
             get_saved_os_screensaver_idle,

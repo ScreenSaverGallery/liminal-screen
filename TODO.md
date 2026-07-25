@@ -7,6 +7,8 @@
 - [ ] notifications: show a confirmation ("hello") notification on the disabled→enabled transition in set_options (lib.rs) — confirms it works, registers the app with the OS notification center, and exposes silent failures. Fire only on false→true, gate on notification_url non-empty. Note: macOS notify-rust (NSUserNotification) posts rather than showing a permission dialog; real behavior only testable in a signed tauri:build, not tauri dev (attributed to Terminal).
 - [ ] security check, see: .hermes/plans/security/PLAN.md
 - [ ] e2e tests, see: .hermes/plans/testing/PLAN.md Part B (unit tests done)
+  - [x] backend test hooks: `debug_set_idle(secs)` injects fake idle time (debug builds only; release stub returns error), `get_screensaver_state()` exposes the full ScreensaverState enum. Lets a test drive idle→saver→display-off→lock deterministically (set small thresholds via set_options + runOnBattery:true, step idle, assert state after ~1s poll settle).
+  - [ ] set up WebdriverIO + tauri-driver CI config for the browser-driven E2E. NOTE: tauri-driver has no macOS support (WKWebView ships no WebDriver), so this runs on Linux (WebKitWebDriver, Xvfb virtual display) / Windows only — NOT the dev Mac. Needs: wdio + tauri-driver dev-deps, wdio.conf, and a Linux CI job (xvfb-run) building a debug binary so debug_set_idle is available.
 - [x] unit tests (Rust: `cargo test` in src-tauri; TS: `bun run test` — see .hermes/plans/testing/)
 - [x] autoupdate implementation (liminal-api, options/main window, tray menu), see: .hermes/plans/autoupdate/ (keys are in /${home}/.tauri/)
 - [x] notifications — remote feed polling via tauri-plugin-notification, see: .hermes/plans/notifications/ (feed URL in .env: VITE_NOTIFICATION_URL)

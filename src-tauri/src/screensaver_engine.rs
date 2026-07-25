@@ -100,6 +100,11 @@ pub struct ScreensaverEngine {
     /// True when a state transition has been dispatched but not yet completed
     /// on the main thread. Prevents duplicate dispatches.
     pending_transition: Arc<AtomicBool>,
+    /// Test hook: when `Some`, the monitoring loop uses this idle time (seconds)
+    /// instead of the real OS idle time, so E2E tests can drive the
+    /// idle → saver → display-off → lock chain deterministically. Only ever set
+    /// via the debug-gated `debug_set_idle` command; always `None` in release.
+    idle_override: Arc<Mutex<Option<u64>>>,
 }
 
 impl Default for ScreensaverEngine {
@@ -114,11 +119,27 @@ impl ScreensaverEngine {
             is_monitoring: Arc::new(AtomicBool::new(false)),
             state: Arc::new(Mutex::new(ScreensaverState::Idle)),
             pending_transition: Arc::new(AtomicBool::new(false)),
+            idle_override: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn get_state(&self) -> ScreensaverState {
         *self.state.lock().unwrap()
+    }
+
+    /// Override the idle time (seconds) fed to the state machine. Pass `None` to
+    /// clear the override and resume real OS idle detection. Test hook only.
+    pub fn set_idle_override(&self, secs: Option<u64>) {
+        *self.idle_override.lock().unwrap() = secs;
+        match secs {
+            Some(v) => println!("Idle override set: {}s", v),
+            None => println!("Idle override cleared"),
+        }
+    }
+
+    /// Current idle override, if any.
+    pub fn idle_override(&self) -> Option<u64> {
+        *self.idle_override.lock().unwrap()
     }
 
     fn set_state(&self, new_state: ScreensaverState) {
@@ -169,8 +190,13 @@ impl ScreensaverEngine {
         &self,
         app: &AppHandle<R>,
     ) -> Result<(), String> {
-        let idle_time = super::power_monitor::get_system_idle_time()
-            .map_err(|e| format!("Failed to get idle time: {}", e))?;
+        // Test hook: an injected idle override (set via `debug_set_idle`) takes
+        // precedence over real OS idle detection. Always `None` in release.
+        let idle_time = match *self.idle_override.lock().unwrap() {
+            Some(overridden) => overridden,
+            None => super::power_monitor::get_system_idle_time()
+                .map_err(|e| format!("Failed to get idle time: {}", e))?,
+        };
 
         let state = app.state::<super::AppState>();
         let options = state.options.lock().unwrap();
@@ -654,6 +680,24 @@ mod tests {
     fn screensaver_stays_active_between_thresholds() {
         let next = compute_next_action(45, 30, 60, 0, ScreensaverState::ScreensaverActive);
         assert_eq!(next, None);
+    }
+
+    // ── idle override / state accessors (test hooks) ─────────────────────────
+
+    #[test]
+    fn new_engine_starts_idle_with_no_override() {
+        let engine = ScreensaverEngine::new();
+        assert_eq!(engine.get_state(), ScreensaverState::Idle);
+        assert_eq!(engine.idle_override(), None);
+    }
+
+    #[test]
+    fn idle_override_can_be_set_and_cleared() {
+        let engine = ScreensaverEngine::new();
+        engine.set_idle_override(Some(300));
+        assert_eq!(engine.idle_override(), Some(300));
+        engine.set_idle_override(None);
+        assert_eq!(engine.idle_override(), None);
     }
 
     // ── build_saver_url ──────────────────────────────────────────────────────
