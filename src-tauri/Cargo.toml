@@ -1,6 +1,6 @@
 [package]
 name = "liminal-screen"
-version = "0.1.5"
+version = "0.2.0"
 description = "A system tray screensaver application built with Tauri v2"
 authors = ["tomaszatoo"]
 edition = "2021"
