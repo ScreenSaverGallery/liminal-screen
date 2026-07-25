@@ -1,6 +1,6 @@
 # Liminal Screen API
 
-IPC bridge for Liminal Screen remote options pages. Works as an npm package or a CDN-loaded script — no `@tauri-apps/api` dependency required.
+IPC bridge for [Liminal Screen](https://github.com/tomaszatoo/liminal-screen) remote options pages. Works as an npm package or a CDN-loaded script — no `@tauri-apps/api` dependency required.
 
 ## Overview
 
@@ -9,11 +9,12 @@ The Liminal Screen API lets remote options pages communicate with the Tauri back
 ## Features
 
 - **Cross-environment**: Works in Tauri webviews and plain browsers (mock mode)
-- **TypeScript**: Full types for `AppOptions`, `SetOptionsPayload`, `CustomOptions`
-- **Reactive store**: `createOptionsStore()` provides a `Signal`-based reactive state with auto-polling sync
+- **TypeScript**: Full types for `AppOptions`, `SetOptionsPayload`, `CustomOptions`, `UpdateInfo`
+- **Reactive store**: `createOptionsStore()` provides a `Signal`-based reactive state kept in sync with the backend
 - **Native dialogs**: `ask()` and `showMessage()` use Tauri's dialog plugin when available, fall back to `confirm()`/`alert()`
 - **Event sync**: `startAutoSync()` pushes real-time option updates from the backend
 - **System screensaver control**: detect a conflicting OS screensaver and disable/restore it so Liminal is the only screensaver
+- **App updates**: `checkForUpdates()`, `installUpdate()` and an `update-available` subscription
 - **App version**: `getVersion()` returns the running application version
 - **Zero dependencies**: No `@tauri-apps/api` needed — uses `window.__TAURI__` globals directly
 
@@ -38,6 +39,8 @@ import { liminalAPI, createOptionsStore } from '@liminal-screen/api';
   // ...
 </script>
 ```
+
+Pin an exact version in production — e.g. `@liminal-screen/api@0.2.0`.
 
 ## Quick Start
 
@@ -109,6 +112,21 @@ if (saved != null) {
 }
 ```
 
+### App updates
+
+```javascript
+// React to the startup check as well as manual checks
+liminalAPI.onUpdateAvailable((info) => {
+  banner.textContent = `Version ${info.version} is available`;
+});
+
+// Manual check, gated behind a user action
+const update = await liminalAPI.checkForUpdates();
+if (update && await liminalAPI.ask(`Install v${update.version} now? The app will restart.`)) {
+  await liminalAPI.installUpdate();
+}
+```
+
 ### App version
 
 ```javascript
@@ -125,17 +143,22 @@ document.getElementById('version').textContent = `v${await liminalAPI.getVersion
 | `setOptions(payload)` | `Promise<void>` | Save user options (identity fields preserved) |
 | `resetOptions()` | `Promise<AppOptions>` | Reset to `.env` defaults |
 | `previewScreensaver()` | `Promise<void>` | Trigger a screensaver preview |
-| `getVersion()` | `Promise<string>` | Running app version (e.g. `"0.1.5"`) |
+| `getVersion()` | `Promise<string>` | Running app version (e.g. `"0.2.0"`) |
 | `getOsScreensaverStatus()` | `Promise<OsScreensaverStatus>` | Read the OS-native screensaver config (conflict detection) |
 | `disableOsScreensaver()` | `Promise<void>` | Disable the OS screensaver so it can't cover Liminal (prior value saved) |
 | `restoreOsScreensaver()` | `Promise<void>` | Restore the OS screensaver to the saved value |
 | `getSavedOsScreensaverIdle()` | `Promise<number \| null>` | Saved OS timeout (seconds) if Liminal disabled it, else `null` |
 | `ask(message, options?)` | `Promise<boolean>` | Confirmation dialog (falls back to `confirm()`) |
 | `showMessage(message, options?)` | `Promise<void>` | Message dialog (falls back to `alert()`) |
+| `checkForUpdates()` | `Promise<UpdateInfo \| null>` | Check for an app update; `null` when none (or outside Tauri) |
+| `installUpdate()` | `Promise<void>` | Download and install a pending update, then restart |
+| `onUpdateAvailable(callback)` | `() => void` | Subscribe to `update-available` events |
 | `startAutoSync(callback)` | `Promise<() => void>` | Subscribe to real-time option updates |
 | `onOptionsUpdate(callback)` | `() => void` | Listen on window event bus (works outside Tauri) |
 | `destroy()` | `void` | Clean up all listeners |
 | `isInTauri` | `boolean` | `true` when running inside Tauri |
+
+Also exported: `createOptionsStore`, `Signal`, `LiminalAPIError`, and the `LiminalAPI` class itself for multi-instance setups.
 
 ### `createOptionsStore(api)` — reactive store
 
@@ -145,24 +168,33 @@ Returns `{ signal, save, reset, destroy }` where `signal` is a `Signal<AppOption
 
 ```typescript
 interface AppOptions extends MandatoryOptions {
-  saverUrl: string;          // Production screensaver URL (read-only)
-  saverUrlDebug: string;     // Debug screensaver URL (read-only)
+  saverUrl: string;           // Production screensaver URL (read-only)
+  saverUrlDebug: string;      // Debug screensaver URL (read-only)
   optionsUrl: string;         // Remote options URL (read-only)
   appName: string;            // Fork display name (read-only)
-  appDescription: string;    // Fork description (read-only)
-  customOptions: CustomOptions; // Fork-defined key/value pairs
+  appDescription: string;     // Fork description (read-only)
+  customOptions: CustomOptions;      // Fork-defined key/value pairs
+  instanceId: string;                // Instance UUID (read-only, reset on factory reset)
+  notificationsEnabled: boolean;     // User consent for feed notifications
+  notificationUrl: string;           // Notification feed URL (read-only; empty = disabled)
+  notificationCheckIntervalSecs: number; // Poll interval (read-only)
+  autostart: boolean;                // Start at login (reflects the OS login item)
 }
 
 interface MandatoryOptions {
-  startsIn: number;           // Minutes before activation
-  displayOffIn: number;       // Minutes before display off
-  requirePassIn: number;      // Minutes before lock (0 = disabled)
-  runOnBattery: boolean;      // Run on battery power
-  debug: boolean;             // Use debug URL
+  startsIn: number;            // Minutes before activation
+  displayOffIn: number;        // Minutes before display off
+  requirePassIn: number;       // Minutes before lock (0 = disabled)
+  runOnBattery: boolean;       // Run on battery power
+  debug: boolean;              // Use debug URL
+  notificationsEnabled?: boolean; // Opt-in; omit to keep current consent
+  autostart?: boolean;         // Omit to keep the current login-item state
 }
 
 type CustomOptions = Record<string, string | number | boolean>;
 ```
+
+`setOptions()` merges the payload over the current options, so the optional fields can be omitted safely. Read-only fields are re-applied by the backend and cannot be changed from the options page.
 
 ### `OsScreensaverStatus` type
 
@@ -174,15 +206,24 @@ interface OsScreensaverStatus {
 }
 ```
 
+### `UpdateInfo` type
+
+```typescript
+interface UpdateInfo {
+  version: string;            // Version of the available update
+  notes?: string;             // Release notes, when the release provides them
+}
+```
+
 ## Documentation
 
 - **[API.md](docs/API.md)** — Full API specification
 - **[INTEGRATION-GUIDE.md](docs/INTEGRATION-GUIDE.md)** — Step-by-step integration guide
-- **[SECURITY.md](docs/SECURITY.md)** — Security model and best practices
+- **[SECURITY.md](docs/SECURITY.md)** — Trust model and deployment recommendations
 
 ## Reference Implementation
 
-See `examples/remote-options/` for a complete options page with form handling, reactive store, native dialogs, and service worker.
+See [`examples/remote-options/`](https://github.com/tomaszatoo/liminal-screen/tree/main/packages/liminal-api/examples/remote-options) for a complete options page with form handling, reactive store, native dialogs, and service worker.
 
 ## Development
 
@@ -192,8 +233,11 @@ bun run build
 
 # Typecheck
 bun run typecheck
+
+# Tests (run from the repository root)
+bun run test
 ```
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
