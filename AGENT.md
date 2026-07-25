@@ -101,14 +101,14 @@ This application runs on **macOS**, **Windows**, and **Linux** (both X11 and Way
 │       ├── power_monitor.rs       ← Platform idle time detection
 │       └── autoplay_media.rs      ← WKWebView/WebView2 autoplay config
 ├── packages/
-│   └── liminal-api/               ← SDK for fork developers (UMD + ESM)
+│   └── liminal-api/               ← SDK for fork developers (npm: @liminal-screen/api; ESM + IIFE)
 │       ├── package.json
 │       ├── tsconfig.json
 │       └── src/
 │           ├── index.ts
+│           ├── global.ts          ← CDN entry: sets globalThis.LiminalAPI
 │           ├── store.ts
 │           ├── reactive.ts
-│           ├── security.ts
 │           └── types.ts
 ├── options/                        ← Reference remote options page
 │   ├── index.html
