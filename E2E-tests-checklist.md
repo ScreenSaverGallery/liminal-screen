@@ -12,6 +12,7 @@
 - [ ] check for update
 - [ ] update
 - [ ] multi-screen run
+- [ ] run on battery
 ---
 - [ ] notifications
 
