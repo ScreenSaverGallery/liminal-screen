@@ -19,6 +19,13 @@ export interface MandatoryOptions {
    * options, so omitting it leaves the user's consent unchanged.
    */
   notificationsEnabled?: boolean;
+  /**
+   * Start Liminal at login. Mirrors the OS login-item state, which is the
+   * source of truth — the backend applies the change and reports back what
+   * the OS accepted, so the saved value may differ from the requested one.
+   * Optional in payloads: omitting it leaves the current state unchanged.
+   */
+  autostart?: boolean;
 }
 
 /**
@@ -45,12 +52,16 @@ export interface AppOptions extends MandatoryOptions {
   appDescription: string;
   /** Fork-defined custom fields */
   customOptions: CustomOptions;
+  /** Instance UUID (read-only; regenerated on factory reset) */
+  instanceId: string;
   /** User consent for feed notifications — always present in get_options results */
   notificationsEnabled: boolean;
   /** Notification feed URL (env-controlled, read-only; empty = feature disabled) */
   notificationUrl: string;
   /** Notification poll interval in seconds (env-controlled, read-only) */
   notificationCheckIntervalSecs: number;
+  /** Start at login — always present in get_options results (reflects the OS state) */
+  autostart: boolean;
 }
 
 /**
