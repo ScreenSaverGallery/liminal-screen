@@ -227,13 +227,14 @@ The Rust backend is the engine — it handles all screensaver lifecycle, window 
 
 ### Shared Library (`packages/liminal-api/`)
 
-Reusable SDK for fork developers who host their own remote options page. Works via `__TAURI__` globals (no npm install required).
+Reusable SDK for fork developers who host their own remote options page, published to npm as [`@liminal-screen/api`](https://www.npmjs.com/package/@liminal-screen/api). Works via `__TAURI__` globals (no npm install required — a CDN `<script>` is enough).
 
-- `src/index.ts` — `LiminalAPI` class: `getOptions`, `setOptions`, `resetOptions`, `previewScreensaver`, `startAutoSync`, `ask`, `showMessage`
-- `src/store.ts` — `createOptionsStore` — signal-based reactive state with polling sync
+- `src/index.ts` — `LiminalAPI` class: `getOptions`, `setOptions`, `resetOptions`, `previewScreensaver`, `getVersion`, OS-screensaver conflict handling, updater commands, `startAutoSync`, `ask`, `showMessage`
+- `src/store.ts` — `createOptionsStore` — signal-based reactive state, synced from backend `options-updated` events
 - `src/reactive.ts` — Lightweight `Signal<T>` for remote options page
-- `src/security.ts` — Tauri invoke validation and sanitization
-- `src/types.ts` — `AppOptions`, `SetOptionsPayload`, `CustomOptions` types
+- `src/types.ts` — `AppOptions`, `SetOptionsPayload`, `CustomOptions`, `OsScreensaverStatus`, `UpdateInfo` types (mirror the Rust structs)
+- `src/global.ts` — IIFE/CDN entry point; attaches the public surface to `globalThis.LiminalAPI`
+- `docs/` — API spec, integration guide, security/trust model (shipped in the npm tarball)
 - `examples/remote-options/` — Reference options page (HTML + JS + service worker) ready to deploy
 
 ### Build Scripts (`scripts/`)
