@@ -346,7 +346,9 @@ VITE_DEFAULT_DEBUG=false
 
 **Critical:** The bundle `identifier` (`VITE_APP_IDENTIFIER` in `.env`) must be unique per fork — collisions cause shared webview data directories and corrupted state. Only alphanumeric characters, hyphens, and periods are allowed.
 
-**Multi-line env values:** `VITE_UPDATER_PUBKEY` contains a PEM with newlines. Loaders that strip newlines (e.g. `export $(cat .env | xargs)`) will corrupt it — use `set -a; source .env; set +a` or `bun --env-file=.env` instead. The `build-tauri-config.ts` script parses `.env` directly (with multi-line quote support), so it is unaffected by the shell loader choice, but the Rust backend’s `option_env!` reads from the OS environment at compile time, so for production builds the env must be exported to the OS with newlines preserved.
+**Multi-line env values:** `VITE_UPDATER_PUBKEY` contains a PEM with newlines. Loaders that strip newlines (e.g. `export $(cat .env | xargs)`) will corrupt it. The `build-tauri-config.ts` script parses `.env` directly (with multi-line quote support), so the merge-patch is unaffected by the shell loader choice. The Rust backend's `option_env!` reads from the OS environment at compile time, so for production builds the env vars must be present in the real OS environment that `cargo`/`rustc` inherit.
+
+> **Bun auto-load is NOT enough.** Bun's automatic `.env` loading populates `process.env` *inside the Bun JS runtime only* — it does **not** export those vars to the OS environment that child processes (`tauri`, `cargo`, `rustc`) inherit. Verified empirically: a `node` child spawned from a `bun run` script sees `VITE_*` as `undefined`. The `tauri:dev` and `tauri:build` scripts therefore wrap their command body in `bun --env-file=.env run <inner-script>` — the **explicit `--env-file` flag** loads `.env` into the actual OS environment (preserving multi-line PEMs), so `option_env!` bakes in the real values at compile time. This replaces the old POSIX-only `set -a; source .env; set +a` prelude and works on PowerShell, cmd, bash, and zsh. If you ever invoke `cargo build` directly outside these scripts, use `bun --env-file=.env run cargo build` or a loader that preserves newlines.
 
 ### 7.2 Development Commands
 
@@ -357,8 +359,9 @@ bun install
 # Development (hot reload) — generates merge-patch from .env, then runs tauri dev
 bun run tauri:dev
 
-# Production build — exports env to OS (for option_env! at compile time), then generates merge-patch and runs tauri build
-set -a; source .env; set +a
+# Production build — wraps the build in `bun --env-file=.env` so VITE_* vars reach
+# cargo/rustc via the OS environment (for option_env! at compile time), then
+# generates the merge-patch and runs tauri build
 bun run tauri:build
 
 # Other Tauri CLI subcommands (info, icon, signer generate, …) use the plain `tauri` script:
@@ -372,7 +375,7 @@ bun tauri icon
 bun run build    # in packages/liminal-api/
 ```
 
-The `tauri:dev` and `tauri:build` scripts run `scripts/build-tauri-config.ts` first, then invoke `tauri dev --config src-tauri/.tauri-runtime.conf.json` (resp. `tauri build …`). The plain `tauri` script is unchanged because `--config` is only accepted by the `dev`/`build`/`bundle` subcommands, not by `info`/`icon`/etc.
+The `tauri:dev` and `tauri:build` scripts wrap their command body in `bun --env-file=.env run <:inner>` (see the `tauri:dev:inner` / `tauri:build:inner` scripts) so that `VITE_*` vars reach `cargo`/`rustc` via the OS environment and `option_env!` bakes in the real values at compile time. Bun's automatic `.env` loading is NOT enough for this — it only fills the Bun JS `process.env` and does not propagate to child processes (verified empirically). The inner scripts run `scripts/build-tauri-config.ts` first, then invoke `tauri dev --config src-tauri/.tauri-runtime.conf.json` (resp. `tauri build …`). The plain `tauri` script is unchanged because `--config` is only accepted by the `dev`/`build`/`bundle` subcommands, not by `info`/`icon`/etc. The `:inner` scripts are internal — always invoke `tauri:dev` / `tauri:build` so the `--env-file` wrapper is applied.
 
 ### 7.3 Platform Notes
 

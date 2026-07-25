@@ -21,7 +21,10 @@ export type EnvMap = Record<string, string>;
  */
 export function parseEnv(content: string): EnvMap {
   const env: EnvMap = {};
-  const lines = content.split("\n");
+  // Normalize CRLF / lone CR to LF so trailing "\r" doesn't leak into values
+  // (Windows .env files). Without this, a value like KEY="value"\r fails the
+  // `endsWith('"')` quote-strip check below and the quotes + \r slip through.
+  const lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
   let i = 0;
 
   while (i < lines.length) {

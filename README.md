@@ -55,15 +55,14 @@ The base `tauri.conf.json` carries **structural config** plus **obvious placehol
 >
 > **Updater deactivation:** If you haven't published a `latest.json` release feed yet, leave `VITE_UPDATER_ENDPOINT` empty in `.env`. The Rust updater module checks that env var and skips all update checks/downloads when it's unset — no `[updater] Error` noise in the logs. Set it once your release feed is live.
 
-**Loading `.env` for production builds:** the merge-patch is generated from `.env` directly (the script handles multi-line values like the updater PEM), but the Rust backend’s `option_env!` reads from the OS environment at compile time. For production builds, export the env vars with a loader that preserves newlines:
+**Loading `.env` for production builds:** the merge-patch is generated from `.env` directly (the script handles multi-line values like the updater PEM), but the Rust backend's `option_env!` reads from the **OS environment at compile time** — not the `.env` file. Bun's automatic `.env` loading only fills the Bun JS `process.env` and does **not** propagate to child processes (`tauri`/`cargo`/`rustc`), so the `tauri:build` script wraps its command body in `bun --env-file=.env run` to load `.env` into the real OS environment. This preserves multi-line values like the updater PEM and works on PowerShell, cmd, bash, and zsh.
 
 ```bash
-# Preferred (preserves multi-line values like VITE_UPDATER_PUBKEY)
-set -a; source .env; set +a
+# Production build — the script applies --env-file internally; just run:
 bun run tauri:build
 
-# Or via Bun's built-in env loader
-bun --env-file=.env run tauri:build
+# If invoking cargo directly outside Bun, use Bun's env loader:
+bun --env-file=.env run cargo build
 ```
 
 > Avoid `export $(cat .env | xargs)` — it breaks on multi-line values like the updater PEM.
@@ -115,8 +114,7 @@ bun install
 # Development (hot reload) — generates merge-patch from .env, then runs tauri dev
 bun run tauri:dev
 
-# Production build (preserves multi-line env values like VITE_UPDATER_PUBKEY)
-set -a; source .env; set +a
+# Production build (the script applies --env-file internally; preserves multi-line values like VITE_UPDATER_PUBKEY)
 bun run tauri:build
 ```
 
@@ -198,9 +196,9 @@ Factory reset does two things:
 # Development mode
 `bun run tauri:dev`
 
-# Production build (preserves multi-line env values like VITE_UPDATER_PUBKEY)
-set -a; source .env; set +a
+# Production build (the script applies --env-file internally; preserves multi-line values like VITE_UPDATER_PUBKEY)
 bun run tauri:build
+```
 
 ## Architecture
 
