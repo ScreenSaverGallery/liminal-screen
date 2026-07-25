@@ -23,28 +23,42 @@ pub struct ScreensaverStatus {
 /// decide which state (if any) to transition to next.
 ///
 /// Priority: Lock > Display Off > Screensaver Active > Idle (deactivation).
+/// `saver_allowed` is false when on battery with run-on-battery off: the visual
+/// screensaver is suppressed (and closed if already showing), but display-off
+/// and lock still fire — power saving and security shouldn't depend on battery.
 /// Returns None when no transition is needed.
 pub fn compute_next_action(
     idle_secs: u64,
     starts_in_secs: u64,
     display_off_secs: u64,
     require_pass_secs: u64,
+    saver_allowed: bool,
     current_state: ScreensaverState,
 ) -> Option<ScreensaverState> {
-    // PRIORITY 1: LOCK (security) — only when enabled (require_pass_secs > 0)
+    // PRIORITY 1: LOCK (security) — only when enabled (require_pass_secs > 0).
+    // Fires regardless of saver_allowed.
     if require_pass_secs > 0 && idle_secs >= require_pass_secs {
         return (current_state != ScreensaverState::Locked).then_some(ScreensaverState::Locked);
     }
 
-    // PRIORITY 2: DISPLAY OFF (power saving)
+    // PRIORITY 2: DISPLAY OFF (power saving) — fires regardless of saver_allowed.
     if idle_secs >= display_off_secs {
         return (current_state != ScreensaverState::DisplayOff)
             .then_some(ScreensaverState::DisplayOff);
     }
 
+    // When the saver isn't allowed (on battery) but is currently showing —
+    // e.g. the user unplugged mid-session — close it. Display-off/lock still
+    // fire from Idle on later ticks once their thresholds are reached.
+    if !saver_allowed && current_state == ScreensaverState::ScreensaverActive {
+        return Some(ScreensaverState::Idle);
+    }
+
     // PRIORITY 3: SCREENSAVER ACTIVATION (visual) — requires the screensaver
-    // window to actually get screen time before display-off kicks in
-    if idle_secs >= starts_in_secs
+    // window to actually get screen time before display-off kicks in, and is
+    // suppressed entirely when the saver isn't allowed (battery).
+    if saver_allowed
+        && idle_secs >= starts_in_secs
         && current_state == ScreensaverState::Idle
         && starts_in_secs < display_off_secs
     {
@@ -206,21 +220,21 @@ impl ScreensaverEngine {
         let run_on_battery = options.run_on_battery;
         drop(options);
 
-        if !run_on_battery {
+        // On battery with run-on-battery off, suppress the visual screensaver but
+        // still let display-off and lock fire (the state machine handles this via
+        // `saver_allowed`). is_on_battery_power runs every tick here as before; a
+        // read error is treated as "on AC" so the saver isn't wrongly hidden.
+        let saver_allowed = if run_on_battery {
+            true
+        } else {
             match super::power_monitor::is_on_battery_power() {
-                Ok(on_battery) => {
-                    if on_battery {
-                        if self.get_state() != ScreensaverState::Idle
-                            && !self.pending_transition.load(Ordering::Relaxed)
-                        {
-                            self.request_deactivate(app);
-                        }
-                        return Ok(());
-                    }
+                Ok(on_battery) => !on_battery,
+                Err(e) => {
+                    println!("Warning: Failed to check battery status: {}", e);
+                    true
                 }
-                Err(e) => println!("Warning: Failed to check battery status: {}", e),
             }
-        }
+        };
 
         // Skip all checks if a transition is already in flight
         if self.pending_transition.load(Ordering::Relaxed) {
@@ -232,6 +246,7 @@ impl ScreensaverEngine {
             starts_in_seconds,
             display_off_seconds,
             require_pass_seconds,
+            saver_allowed,
             self.get_state(),
         ) {
             Some(ScreensaverState::Locked) => self.request_lock(app),
@@ -617,69 +632,97 @@ mod tests {
 
     #[test]
     fn lock_takes_priority_over_display_off() {
-        let next = compute_next_action(120, 30, 60, 90, ScreensaverState::ScreensaverActive);
+        let next = compute_next_action(120, 30, 60, 90, true, ScreensaverState::ScreensaverActive);
         assert_eq!(next, Some(ScreensaverState::Locked));
     }
 
     #[test]
     fn already_locked_does_not_relock_every_tick() {
-        let next = compute_next_action(120, 30, 60, 90, ScreensaverState::Locked);
+        let next = compute_next_action(120, 30, 60, 90, true, ScreensaverState::Locked);
         assert_eq!(next, None);
     }
 
     #[test]
     fn display_off_takes_priority_over_screensaver() {
-        let next = compute_next_action(70, 30, 60, 0, ScreensaverState::Idle);
+        let next = compute_next_action(70, 30, 60, 0, true, ScreensaverState::Idle);
         assert_eq!(next, Some(ScreensaverState::DisplayOff));
     }
 
     #[test]
     fn screensaver_activates_when_idle_enough() {
-        let next = compute_next_action(40, 30, 60, 0, ScreensaverState::Idle);
+        let next = compute_next_action(40, 30, 60, 0, true, ScreensaverState::Idle);
         assert_eq!(next, Some(ScreensaverState::ScreensaverActive));
     }
 
     #[test]
     fn deactivates_on_user_activity() {
-        let next = compute_next_action(5, 30, 60, 0, ScreensaverState::ScreensaverActive);
+        let next = compute_next_action(5, 30, 60, 0, true, ScreensaverState::ScreensaverActive);
         assert_eq!(next, Some(ScreensaverState::Idle));
     }
 
     #[test]
     fn deactivates_from_display_off_on_user_activity() {
-        let next = compute_next_action(5, 30, 60, 0, ScreensaverState::DisplayOff);
+        let next = compute_next_action(5, 30, 60, 0, true, ScreensaverState::DisplayOff);
         assert_eq!(next, Some(ScreensaverState::Idle));
     }
 
     #[test]
     fn no_change_when_idle_but_below_threshold() {
-        let next = compute_next_action(20, 30, 60, 0, ScreensaverState::Idle);
+        let next = compute_next_action(20, 30, 60, 0, true, ScreensaverState::Idle);
         assert_eq!(next, None);
     }
 
     #[test]
     fn no_change_when_already_in_correct_state() {
-        let next = compute_next_action(70, 30, 60, 0, ScreensaverState::DisplayOff);
+        let next = compute_next_action(70, 30, 60, 0, true, ScreensaverState::DisplayOff);
         assert_eq!(next, None);
     }
 
     #[test]
     fn screensaver_does_not_activate_when_starts_in_equals_display_off() {
         // starts_in < display_off_in is required for screensaver activation
-        let next = compute_next_action(60, 60, 60, 0, ScreensaverState::Idle);
+        let next = compute_next_action(60, 60, 60, 0, true, ScreensaverState::Idle);
         assert_eq!(next, Some(ScreensaverState::DisplayOff));
     }
 
     #[test]
     fn lock_disabled_when_require_pass_is_zero() {
-        let next = compute_next_action(300, 30, 60, 0, ScreensaverState::ScreensaverActive);
+        let next = compute_next_action(300, 30, 60, 0, true, ScreensaverState::ScreensaverActive);
         assert_ne!(next, Some(ScreensaverState::Locked));
     }
 
     #[test]
     fn screensaver_stays_active_between_thresholds() {
-        let next = compute_next_action(45, 30, 60, 0, ScreensaverState::ScreensaverActive);
+        let next = compute_next_action(45, 30, 60, 0, true, ScreensaverState::ScreensaverActive);
         assert_eq!(next, None);
+    }
+
+    // ── on battery (saver_allowed = false) ───────────────────────────────────
+
+    #[test]
+    fn saver_suppressed_on_battery() {
+        // Idle past the start threshold, but the visual saver must not activate.
+        let next = compute_next_action(40, 30, 60, 0, false, ScreensaverState::Idle);
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn display_off_still_fires_on_battery() {
+        let next = compute_next_action(70, 30, 60, 0, false, ScreensaverState::Idle);
+        assert_eq!(next, Some(ScreensaverState::DisplayOff));
+    }
+
+    #[test]
+    fn lock_still_fires_on_battery() {
+        let next = compute_next_action(120, 30, 60, 90, false, ScreensaverState::Idle);
+        assert_eq!(next, Some(ScreensaverState::Locked));
+    }
+
+    #[test]
+    fn active_saver_closes_when_battery_disallows() {
+        // User unplugged while the saver was showing (below display-off): close it.
+        let next = compute_next_action(45, 30, 60, 0, false, ScreensaverState::ScreensaverActive);
+        assert_eq!(next, Some(ScreensaverState::Idle));
     }
 
     // ── idle override / state accessors (test hooks) ─────────────────────────
