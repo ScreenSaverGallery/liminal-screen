@@ -2,235 +2,114 @@
 
 ## Overview
 
-The Liminal Screen API includes optional security features to protect against unauthorized access to your screensaver application. This security system uses shared secret authentication to ensure only trusted remote options pages can communicate with your Liminal Screen installation.
+`@liminal-screen/api` is a thin, unauthenticated bridge over Tauri IPC. It holds
+no secrets and performs no authentication of its own — every trust decision is
+made by the Rust backend and by the fork that decides which URL to load.
 
-## Security Model
+> **Note:** earlier drafts of this document described a shared-secret
+> authentication layer (`configureSecurity()`, `generateAuthToken()`). That
+> layer was removed; those methods do not exist. Authentication, if a fork
+> needs it, belongs at the fork level — see [Adding your own auth](#adding-your-own-auth).
 
-### Threat Model
+## Trust model
 
-The API addresses several potential security risks:
+The options page is **remote content running inside your application**. Whoever
+controls `VITE_OPTIONS_URL` can call every command this library exposes.
 
-1. **Impersonation Attacks**: Malicious sites pretending to be legitimate options pages
-2. **Unauthorized Configuration Changes**: Unauthorized modification of screensaver settings
-3. **Data Exfiltration**: Unauthorized access to application configuration
-4. **Command Injection**: Exploitation of IPC communication channels
+What the library can do:
 
-### Security Features
+- read and write user options (`getOptions`, `setOptions`, `resetOptions`)
+- trigger a screensaver preview
+- read the app version
+- read, disable, and restore the **OS-native** screensaver setting
+- check for and install application updates
 
-- **Shared Secret Authentication**: Mutual authentication between app and remote options
-- **Token-Based Authorization**: Time-limited tokens prevent replay attacks
-- **Environment Isolation**: Works only in authorized Tauri environments
-- **Input Validation**: Server-side validation of all commands
+What it cannot do:
 
-## Enabling Security
+- run arbitrary commands — only the commands registered in
+  `tauri::generate_handler![...]` are reachable
+- read or write arbitrary files, spawn processes, or access the network
+  outside the webview's normal browser sandbox
+- change identity fields — `saverUrl`, `saverUrlDebug`, `optionsUrl`,
+  `appName`, `appDescription`, `notificationUrl`,
+  `notificationCheckIntervalSecs` and `instanceId` come from the fork's `.env`
+  and the backend ignores user-submitted values for them
 
-### 1. Configure Shared Secret
+## Backend guarantees
 
-Set the shared secret in your `.env` file:
+1. **Allow-listed commands.** The webview can only invoke commands the app
+   explicitly registers. Everything else fails at the IPC boundary.
+2. **Server-side validation.** `set_options` validates timing values (e.g.
+   `startsIn` minimum) and rejects out-of-range input — client-side validation
+   is a convenience, not a control.
+3. **Identity fields are read-only.** They are re-applied from `.env` on every
+   write, so a hostile options page cannot repoint the screensaver URL.
+4. **Capability-gated plugins.** `ask()` and `showMessage()` only reach native
+   dialogs when the Tauri capability file grants `dialog:allow-ask` and
+   `dialog:allow-message`. Without those permissions they fall back to
+   `confirm()` / `alert()`.
+5. **Opt-in notifications.** `notificationsEnabled` defaults to `false` and no
+   notification is shown while it is false.
+6. **Login item owned by the OS.** `autostart` is applied through the OS login
+   item; the backend reports back what the OS accepted, which may differ from
+   what was requested.
 
-```bash
-# .env
-LIMINAL_API_SECRET=your-very-long-random-secret-key-here
-```
+## Deployment recommendations
 
-Generate a strong secret using a password generator or cryptographic tool:
+Because the options URL is the trust boundary, the meaningful controls are the
+ones around hosting it:
 
-```bash
-# Generate a secure random secret
-openssl rand -hex 32
-```
+1. **Serve over HTTPS.** Plain HTTP lets a network attacker replace your
+   options page and thereby control the settings above.
+2. **Pin the URL to a host you control.** Don't point `VITE_OPTIONS_URL` at
+   third-party hosting you can't lock down, and avoid user-supplied redirects.
+3. **Set a Content Security Policy** on the options page so injected content or
+   a compromised dependency can't call the API on your users' behalf.
+4. **Pin CDN dependencies.** If you load the library from a CDN, pin an exact
+   version (`https://unpkg.com/@liminal-screen/api@0.2.0/dist/liminal-api.global.js`)
+   rather than a floating tag, and consider Subresource Integrity.
+5. **Review anything you inline.** Analytics snippets and tag managers on the
+   options page run with the same IPC access as your own code.
+6. **Treat `instanceId` as a pseudonymous identifier.** It is stable per
+   installation until a factory reset. Don't ship it to third parties without
+   telling your users.
 
-### 2. Enable Authentication Requirement
+## OS screensaver changes
 
-Configure your Liminal Screen application to require authentication:
+`disableOsScreensaver()` mutates a system setting outside your app:
 
-```javascript
-// In your remote options page
-import { liminalAPI } from '@liminal-screen/api';
+- **macOS** — `defaults -currentHost write com.apple.screensaver idleTime 0`
+- **Windows** — `SystemParametersInfoW(SPI_SETSCREENSAVEACTIVE, FALSE)`
+- **Linux (GNOME)** — `gsettings set org.gnome.desktop.session idle-delay 0`
 
-// Configure security
-liminalAPI.configureSecurity({
-  sharedSecret: 'your-shared-secret-here',
-  requireAuth: true
-});
+The prior value is saved so `restoreOsScreensaver()` can undo it. **Always ask
+before calling it** — `ask()` exists for exactly this — and surface a restore
+affordance whenever `getSavedOsScreensaverIdle()` returns non-null. Silently
+disabling a user's screensaver is the kind of behaviour that gets an app
+uninstalled.
 
-// Initialize the API
-await liminalAPI.init();
-```
+## Updates
 
-### 3. Generate Authentication Tokens
+`installUpdate()` downloads and installs a new application build, then
+restarts. Update artifacts are verified against the updater's public key by the
+Tauri updater plugin — the library only triggers the flow. Gate it behind an
+explicit user action.
 
-When making API calls, include authentication tokens:
+## Adding your own auth
 
-```javascript
-// Generate auth token
-const authToken = liminalAPI.generateAuthToken();
+If your deployment needs the options page itself to be restricted, do it at the
+hosting layer rather than in the IPC bridge — the bridge runs on the user's
+machine, so any secret shipped to it is readable by the user:
 
-// Use token with API calls
-await liminalAPI.setOptions({
-  startsIn: 0.5,
-  debug: true
-}, authToken);
-```
+- put the page behind SSO / basic auth / an allow-listed network
+- serve a per-installation URL and validate it server-side
+- gate sensitive fork-specific fields behind your own backend, and keep
+  `customOptions` to non-sensitive values
 
-## How It Works
+Anything embedded in the page is client-side and cannot be treated as a secret.
 
-### Token Generation
+## Reporting a vulnerability
 
-1. **Timestamp Creation**: Current timestamp is captured
-2. **Nonce Generation**: Cryptographically secure random nonce prevents replay attacks
-3. **Signature Creation**: HMAC-SHA256 signature using shared secret via `crypto.subtle`
-4. **Token Assembly**: Combined into verifiable token format
-
-### Token Validation
-
-1. **Timestamp Check**: Ensures token hasn't expired
-2. **Signature Verification**: Validates token authenticity
-3. **Replay Protection**: Checks against previously used tokens
-4. **Session Management**: Maintains active session state
-
-### Security Levels
-
-#### Basic Security (Default)
-- No authentication required
-- Works in any Tauri environment
-- Suitable for local/trusted network use
-
-#### Enhanced Security
-- Shared secret authentication required
-- Time-limited tokens
-- Replay attack protection
-- Recommended for internet-facing deployments
-
-## Best Practices
-
-### Secret Management
-
-1. **Never commit secrets to version control**
-2. **Use different secrets for development and production**
-3. **Rotate secrets periodically**
-4. **Store secrets securely in environment variables**
-
-### Token Handling
-
-1. **Use short-lived tokens** (default 1 hour expiration)
-2. **Generate new tokens for each sensitive operation**
-3. **Never log or expose tokens in client-side code**
-4. **Implement proper error handling for authentication failures**
-
-### Network Security
-
-1. **Serve options pages over HTTPS**
-2. **Use Content Security Policy headers**
-3. **Implement rate limiting on API endpoints**
-4. **Monitor for suspicious authentication attempts**
-
-## Example Implementation
-
-```javascript
-// secure-options.html
-import { liminalAPI } from '@liminal-screen/api';
-
-// Configure security — use a safe pattern that works in browsers too
-liminalAPI.configureSecurity({
-  sharedSecret:
-    typeof process !== 'undefined' && process.env
-      ? process.env.LIMINAL_API_SECRET
-      : undefined,
-  requireAuth: true
-});
-
-async function initializeSecureOptions() {
-  try {
-    // Initialize with security
-    await liminalAPI.init();
-
-    // Load options with authentication
-    const authToken = liminalAPI.generateAuthToken();
-    const options = await liminalAPI.getOptions(authToken);
-
-    // Update UI with options
-    updateOptionsForm(options);
-
-  } catch (error) {
-    if (error.name === 'LiminalAPIError') {
-      console.error('Security error:', error.message);
-      // Handle authentication failure
-      showAuthenticationError();
-    }
-  }
-}
-
-async function saveSecureOptions(formData) {
-  try {
-    const authToken = liminalAPI.generateAuthToken();
-    await liminalAPI.setOptions({
-      startsIn: formData.startsIn,
-      debug: formData.debug
-    }, authToken);
-    showSuccess('Settings saved securely!');
-  } catch (error) {
-    if (error.name === 'LiminalAPIError') {
-      console.error('Failed to save settings:', error.message);
-      showError('Authentication required to save settings');
-    }
-  }
-}
-```
-
-## Troubleshooting
-
-### Common Issues
-
-#### "Authentication required but no shared secret configured"
-- Ensure `LIMINAL_API_SECRET` is set in environment variables
-- Verify the secret is accessible to the application
-- Check that security is properly configured in the API client
-
-#### "Invalid authentication signature"
-- Verify shared secret matches between client and server
-- Check for typos or encoding issues in the secret
-- Ensure both sides are using the same HMAC-SHA256 algorithm
-
-#### "Authentication token expired"
-- Generate a new token (tokens expire after 1 hour by default)
-- Check system clock synchronization
-- Adjust session timeout if needed
-
-### Security Monitoring
-
-Enable logging to monitor authentication attempts:
-
-```javascript
-// Enable detailed security logging
-localStorage.setItem('liminal-debug-security', 'true');
-```
-
-Logs will include:
-- Successful authentications
-- Failed authentication attempts
-- Token generation events
-- Replay attack detections
-
-## Compliance Considerations
-
-### Data Privacy
-- Authentication tokens contain no personal information
-- Shared secrets are never transmitted over networks
-- All communication occurs over secure IPC channels
-
-### Regulatory Compliance
-- Follow organizational policies for secret management
-- Implement audit logging for sensitive operations
-- Regular security assessments of remote options pages
-
-## Future Enhancements
-
-Planned security improvements:
-
-1. **Certificate-based authentication** for enterprise deployments
-2. **Multi-factor authentication** for high-security environments
-3. **OAuth integration** for third-party service authentication
-4. **Advanced encryption** for token signing
-
-Stay updated with the latest security patches by regularly updating the `@liminal-screen/api` package.
+Report security issues via
+<https://github.com/tomaszatoo/liminal-screen/issues>, or privately through the
+repository's security advisory page if the issue is sensitive.
