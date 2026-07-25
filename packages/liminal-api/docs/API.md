@@ -47,6 +47,16 @@ interface AppOptions extends MandatoryOptions {
   appDescription: string;
   /** Fork-defined custom fields */
   customOptions: CustomOptions;
+  /** Instance UUID (read-only; regenerated on factory reset) */
+  instanceId: string;
+  /** User consent for feed notifications — always present in get_options results */
+  notificationsEnabled: boolean;
+  /** Notification feed URL (read-only, from VITE_NOTIFICATION_URL; empty = disabled) */
+  notificationUrl: string;
+  /** Notification poll interval in seconds (read-only, from .env) */
+  notificationCheckIntervalSecs: number;
+  /** Start at login — always present in get_options results (reflects the OS state) */
+  autostart: boolean;
 }
 ```
 
@@ -72,6 +82,13 @@ interface MandatoryOptions {
    * omitting it leaves the user's consent unchanged.
    */
   notificationsEnabled?: boolean;
+  /**
+   * Start Liminal at login. The OS login item is the source of truth — the
+   * backend applies the change and reports back what the OS accepted, so the
+   * saved value may differ from the requested one. Optional in payloads:
+   * omitting it leaves the current state unchanged.
+   */
+  autostart?: boolean;
 }
 ```
 
@@ -133,6 +150,10 @@ await liminalAPI.setOptions({
   debug: false,
 });
 ```
+
+`notificationsEnabled` and `autostart` are optional — omit them and the current
+values are kept. `autostart` is applied to the OS login item, so read the value
+back with `getOptions()` if you need to know what the OS accepted.
 
 ### `resetOptions(): Promise<AppOptions>`
 
@@ -261,7 +282,8 @@ manual checks). Returns an unsubscribe function. No-op outside Tauri.
 
 ### `destroy(): void`
 
-Remove all event listeners registered via `startAutoSync()`. Call on page unload.
+Remove all event listeners registered via `startAutoSync()` and
+`onUpdateAvailable()`. Call on page unload.
 
 ### `isInTauri: boolean`
 
@@ -379,12 +401,11 @@ In browsers: `getOptions()` returns mock defaults, `setOptions()` logs to consol
     });
 
     document.getElementById('save-btn').addEventListener('click', async () => {
+      const opts = store.signal.get();
+      if (!opts) return;
       await store.save({
+        ...opts,
         startsIn: parseFloat(document.getElementById('starts-in').value),
-        displayOffIn: opts.displayOffIn,
-        requirePassIn: opts.requirePassIn,
-        runOnBattery: opts.runOnBattery,
-        debug: opts.debug,
       });
     });
 
