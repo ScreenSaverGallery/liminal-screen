@@ -124,6 +124,43 @@ await liminalAPI.setOptions({
 
 The screensaver URL will include `?theme=dark&speed=1.5`.
 
+## Optional User Fields
+
+Two fields are user-settable but optional in `setOptions()` payloads — omit them
+and the current value is kept:
+
+| Field | Notes |
+|-------|-------|
+| `notificationsEnabled` | Opt-in consent for feed notifications. Only meaningful when the fork sets a notification feed URL (`opts.notificationUrl` is non-empty); hide the control otherwise. Nothing is ever shown while this is `false`. |
+| `autostart` | Start Liminal at login. The OS login item is the source of truth — the backend applies the change and reports back what the OS accepted, so read the value back with `getOptions()` rather than assuming the write stuck. |
+
+```javascript
+// Only offer the notification toggle when the fork configured a feed
+store.signal.effect((opts) => {
+  if (!opts) return;
+  notificationRow.hidden = !opts.notificationUrl;
+  notificationToggle.checked = opts.notificationsEnabled;
+  autostartToggle.checked = opts.autostart;
+});
+```
+
+## App Updates
+
+```javascript
+liminalAPI.onUpdateAvailable((info) => {
+  updateBanner.textContent = `Version ${info.version} is available`;
+  updateBanner.hidden = false;
+});
+
+checkBtn.addEventListener('click', async () => {
+  const update = await liminalAPI.checkForUpdates();
+  if (!update) return liminalAPI.showMessage('You are up to date.');
+  if (await liminalAPI.ask(`Install v${update.version}? The app will restart.`)) {
+    await liminalAPI.installUpdate();
+  }
+});
+```
+
 ## Dialogs
 
 Inside Tauri, `ask()` and `showMessage()` use native OS dialogs via `tauri-plugin-dialog`. In browser fallback mode, they use `confirm()` and `alert()`.
