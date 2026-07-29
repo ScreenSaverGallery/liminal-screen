@@ -595,7 +595,7 @@ async fn create_preview_window<R: Runtime>(
     let parsed_url: url::Url = url
         .parse()
         .map_err(|e| format!("Invalid preview URL '{}': {}", url, e))?;
-    WebviewWindowBuilder::new(&app, label, WebviewUrl::External(parsed_url))
+    let window = WebviewWindowBuilder::new(&app, label.clone(), WebviewUrl::External(parsed_url))
         .title("Screensaver Preview")
         .inner_size(800.0, 600.0)
         .resizable(true)
@@ -609,6 +609,42 @@ async fn create_preview_window<R: Runtime>(
         .initialization_script(speech::POLYFILL_JS)
         .build()
         .map_err(|e| format!("Failed to create preview window: {}", e))?;
+
+    // Destroying a webview does not stop media that is already playing: buffered
+    // audio keeps going in background WebKit/WebView2 processes. That's why
+    // close_all_savers mutes and stops each saver webview and only closes it after
+    // a drain delay — a preview plays the same content and needs the same
+    // treatment. Without this, closing the preview with the window's own close
+    // button leaves audio/video running (the main window's JS preview wrapper
+    // does its own teardown, so only previews opened straight from a remote
+    // options page were affected).
+    let preview = window.clone();
+    let close_app = app.clone();
+    let close_label = label.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            // Take over the close so teardown isn't racing window destruction.
+            api.prevent_close();
+
+            let preview = preview.clone();
+            let app = close_app.clone();
+            let label = close_label.clone();
+            tauri::async_runtime::spawn(async move {
+                autoplay_media::stop_webview(&preview);
+                // Let the WebKit pipeline and CoreAudio drain, as close_all_savers does.
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                let app_handle = app.clone();
+                // destroy(), not close(): close() emits CloseRequested again and
+                // would re-enter this handler.
+                let _ = app.run_on_main_thread(move || {
+                    if let Some(window) = app_handle.get_webview_window(&label) {
+                        let _ = window.destroy();
+                    }
+                });
+            });
+        }
+    });
+
     Ok(())
 }
 
