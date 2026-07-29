@@ -183,6 +183,53 @@ await liminalAPI.showMessage('Settings saved!', {
 
 **Important:** Always use these methods instead of native `confirm()` / `alert()`. Tauri v2's WKWebView silently suppresses native JavaScript dialogs.
 
+## Links Out of the Options Page
+
+Your page runs inside a webview, so a normal link replaces the options UI and
+there's no back button to return. Route every outbound link through `openUrl()`:
+
+```javascript
+document.querySelectorAll('a[href^="http"]').forEach((a) => {
+  a.addEventListener('click', (e) => {
+    e.preventDefault();
+    liminalAPI.openUrl(a.href);
+  });
+});
+```
+
+This needs the `opener:default` permission on the options window. Liminal Screen
+0.3.0 and newer ship it; if you maintain your own
+`src-tauri/capabilities/options.json`, add it there:
+
+```json
+{
+  "identifier": "options-capability",
+  "windows": ["options"],
+  "permissions": ["dialog:allow-ask", "dialog:allow-message", "opener:default"]
+}
+```
+
+Without the permission the call falls back to `window.open()`, which the webview
+ignores — the link will simply appear dead, with a warning in the console rather
+than a thrown error.
+
+## Screensaver Preview
+
+```javascript
+$('preview-btn').addEventListener('click', async () => {
+  try {
+    await liminalAPI.previewScreensaver();
+  } catch (e) {
+    // e.g. debug mode is on but the fork set no VITE_SAVER_URL_DEBUG
+    await liminalAPI.showMessage(e.message, { title: 'Preview', kind: 'error' });
+  }
+});
+```
+
+The preview opens the saver URL for the *current* `debug` setting in an 800×600
+window. Save the form before previewing if you want the user's unsaved changes
+reflected — the backend reads persisted options, not your form state.
+
 ## Environment Detection
 
 ```javascript

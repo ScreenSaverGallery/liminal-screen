@@ -12,6 +12,8 @@ The Liminal Screen API lets remote options pages communicate with the Tauri back
 - **TypeScript**: Full types for `AppOptions`, `SetOptionsPayload`, `CustomOptions`, `UpdateInfo`
 - **Reactive store**: `createOptionsStore()` provides a `Signal`-based reactive state kept in sync with the backend
 - **Native dialogs**: `ask()` and `showMessage()` use Tauri's dialog plugin when available, fall back to `confirm()`/`alert()`
+- **External links**: `openUrl()` opens links in the user's real browser instead of hijacking the options window
+- **Screensaver preview**: `previewScreensaver()` opens a windowed preview of the configured saver URL
 - **Event sync**: `startAutoSync()` pushes real-time option updates from the backend
 - **System screensaver control**: detect a conflicting OS screensaver and disable/restore it so Liminal is the only screensaver
 - **App updates**: `checkForUpdates()`, `installUpdate()` and an `update-available` subscription
@@ -40,7 +42,7 @@ import { liminalAPI, createOptionsStore } from '@liminal-screen/api';
 </script>
 ```
 
-Pin an exact version in production — e.g. `@liminal-screen/api@0.2.0`.
+Pin an exact version in production — e.g. `@liminal-screen/api@0.3.0`.
 
 ## Quick Start
 
@@ -90,6 +92,36 @@ await liminalAPI.resetOptions();
 
 // Show a success message
 await liminalAPI.showMessage('Settings saved!', { title: 'Saved', kind: 'info' });
+```
+
+### External links and preview
+
+A remote options page is loaded in a webview, so a plain `<a href>` or
+`window.open()` either replaces your options page or is silently blocked. Use
+`openUrl()` to hand the link to the user's real browser:
+
+```javascript
+document.getElementById('docs-link').addEventListener('click', (e) => {
+  e.preventDefault();
+  liminalAPI.openUrl('https://example.com/docs');
+});
+
+// Optionally pick the application to open it with
+await liminalAPI.openUrl('mailto:support@example.com');
+```
+
+`previewScreensaver()` opens the configured saver URL (`saverUrlDebug` when
+`debug` is on) in its own resizable window, so users can see the effect of their
+settings without waiting for the idle timer:
+
+```javascript
+document.getElementById('preview-btn').addEventListener('click', async () => {
+  try {
+    await liminalAPI.previewScreensaver();
+  } catch (e) {
+    await liminalAPI.showMessage(e.message, { kind: 'error' });
+  }
+});
 ```
 
 ### System screensaver conflict
@@ -142,8 +174,9 @@ document.getElementById('version').textContent = `v${await liminalAPI.getVersion
 | `getOptions()` | `Promise<AppOptions>` | Get current options from backend |
 | `setOptions(payload)` | `Promise<void>` | Save user options (identity fields preserved) |
 | `resetOptions()` | `Promise<AppOptions>` | Reset to `.env` defaults |
-| `previewScreensaver()` | `Promise<void>` | Trigger a screensaver preview |
-| `getVersion()` | `Promise<string>` | Running app version (e.g. `"0.2.0"`) |
+| `previewScreensaver()` | `Promise<void>` | Open a preview window for the configured saver URL |
+| `openUrl(url, openWith?)` | `Promise<void>` | Open an external URL in the user's default browser/app |
+| `getVersion()` | `Promise<string>` | Running app version (e.g. `"0.3.0"`) |
 | `getOsScreensaverStatus()` | `Promise<OsScreensaverStatus>` | Read the OS-native screensaver config (conflict detection) |
 | `disableOsScreensaver()` | `Promise<void>` | Disable the OS screensaver so it can't cover Liminal (prior value saved) |
 | `restoreOsScreensaver()` | `Promise<void>` | Restore the OS screensaver to the saved value |
@@ -214,6 +247,23 @@ interface UpdateInfo {
   notes?: string;             // Release notes, when the release provides them
 }
 ```
+
+## App Compatibility
+
+This package version is independent of the Liminal Screen app version — it
+tracks its own JavaScript API surface. But each method calls into the app's
+backend, so a few need a recent enough app build. Outside Tauri everything falls
+back to mock behaviour, so this only matters for the installed app your fork
+ships.
+
+| Package | Requires app | Notes |
+|---------|--------------|-------|
+| `0.3.0` | `0.2.0`+ | `previewScreensaver()` uses the `create_preview_window` command |
+| `0.3.0` | `0.3.0`+ | `openUrl()` needs the `opener:default` permission on the options window; without it the call falls back to `window.open()`, which webviews usually block |
+| `0.2.0` | `0.2.0`+ | Updater, notification and autostart fields |
+
+Fork developers: if you've customised `src-tauri/capabilities/options.json`, add
+`opener:default` (or `opener:allow-open-url`) to use `openUrl()`.
 
 ## Documentation
 

@@ -166,11 +166,63 @@ const defaults = await liminalAPI.resetOptions();
 
 ### `previewScreensaver(): Promise<void>`
 
-Trigger a preview of the screensaver. No-op in non-Tauri environments.
+Open a preview of the screensaver in its own resizable window (800×600, titled
+"Screensaver Preview"). Reads the current options and uses `saverUrlDebug` when
+`debug` is on, `saverUrl` otherwise.
+
+The preview window is created directly via the backend's `create_preview_window`
+command rather than through the main window's event relay, so it works from a
+remote options page. The window uses a fixed label (`liminal-preview`) and the
+backend is idempotent per label: calling this again while a preview is already
+open does nothing.
+
+Throws `LiminalAPIError('No saver URL configured for preview')` when the
+resolved URL is empty — e.g. `debug` is on but the fork set no
+`VITE_SAVER_URL_DEBUG`. No-op (logs) outside Tauri.
+
+```javascript
+try {
+  await liminalAPI.previewScreensaver();
+} catch (e) {
+  await liminalAPI.showMessage(e.message, { title: 'Preview', kind: 'error' });
+}
+```
+
+Requires an app build with the `create_preview_window` command — Liminal Screen
+0.2.0 or newer.
+
+### `openUrl(url: string, openWith?: string): Promise<void>`
+
+Open an external URL in the user's default browser or application, via the Tauri
+`opener` plugin. Use this for every outbound link: the options page runs in a
+webview, so a plain `<a href>` navigates away from your own page and
+`window.open()` is usually blocked outright.
+
+`openWith` optionally names the application to open the URL with; omit it for the
+system default.
+
+```javascript
+link.addEventListener('click', (e) => {
+  e.preventDefault();
+  liminalAPI.openUrl('https://example.com/docs');
+});
+
+await liminalAPI.openUrl('mailto:support@example.com');
+```
+
+Requires the `opener:default` (or `opener:allow-open-url`) permission on the
+options window's capability — shipped from Liminal Screen 0.3.0. The plugin's
+default scope permits `http:`, `https:`, `mailto:` and `tel:`.
+
+If the plugin call fails (missing permission, blocked scheme) the error is logged
+as a warning and the method falls back to
+`window.open(url, '_blank', 'noopener')`, which most webviews ignore — so a
+missing permission looks like "nothing happened", not an exception. Check the
+webview console when a link seems dead.
 
 ### `getVersion(): Promise<string>`
 
-The running application version (e.g. `"0.1.5"`). Reads the injected `navigator.liminalScreen.version` snapshot when present (no IPC), otherwise asks the backend. Returns an empty string outside Tauri.
+The running application version (e.g. `"0.3.0"`). Reads the injected `navigator.liminalScreen.version` snapshot when present (no IPC), otherwise asks the backend. Returns an empty string outside Tauri.
 
 ```javascript
 document.getElementById('version').textContent = `v${await liminalAPI.getVersion()}`;
@@ -369,7 +421,7 @@ if (liminalAPI.isInTauri) {
 
 In Tauri: all operations use real IPC via `window.__TAURI__.core.invoke`.
 
-In browsers: `getOptions()` returns mock defaults, `setOptions()` logs to console, `ask()`/`showMessage()` fall back to `confirm()`/`alert()`, `previewScreensaver()` is a no-op.
+In browsers: `getOptions()` returns mock defaults, `setOptions()` logs to console, `ask()`/`showMessage()` fall back to `confirm()`/`alert()`, `openUrl()` falls back to `window.open()`, and `previewScreensaver()` is a no-op.
 
 ## Integration Guide
 
@@ -432,7 +484,8 @@ VITE_OPTIONS_URL="https://your-domain.com/options.html"
 - Remote options pages cannot access sensitive system APIs directly
 - Options updates are validated by the Rust backend
 - Identity fields (`saverUrl`, `appName`, etc.) are read-only — user submissions are ignored
-- Dialog permissions must be explicitly granted in Tauri capability files (`dialog:allow-ask`, `dialog:allow-message`)
+- Plugin permissions must be explicitly granted in Tauri capability files — `dialog:allow-ask` and `dialog:allow-message` for dialogs, `opener:default` for `openUrl()`
+- `openUrl()` is scoped by the opener plugin (`http:`, `https:`, `mailto:`, `tel:` by default) — narrow the scope in your capability file if your page only needs specific hosts
 
 ## Versioning
 

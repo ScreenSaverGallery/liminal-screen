@@ -19,7 +19,9 @@ controls `VITE_OPTIONS_URL` can call every command this library exposes.
 What the library can do:
 
 - read and write user options (`getOptions`, `setOptions`, `resetOptions`)
-- trigger a screensaver preview
+- open a screensaver preview window pointed at the fork's own saver URL
+- open external URLs in the user's browser (`openUrl`), within the opener
+  plugin's scheme scope
 - read the app version
 - read, disable, and restore the **OS-native** screensaver setting
 - check for and install application updates
@@ -47,7 +49,12 @@ What it cannot do:
 4. **Capability-gated plugins.** `ask()` and `showMessage()` only reach native
    dialogs when the Tauri capability file grants `dialog:allow-ask` and
    `dialog:allow-message`. Without those permissions they fall back to
-   `confirm()` / `alert()`.
+   `confirm()` / `alert()`. `openUrl()` likewise needs `opener:default` (or
+   `opener:allow-open-url`), and the plugin enforces its own scheme scope —
+   `http:`, `https:`, `mailto:` and `tel:` by default, so a hostile page can't
+   hand `file:` or a custom scheme to the OS.
+   Narrow that scope in your capability file if your page only links to known
+   hosts.
 5. **Opt-in notifications.** `notificationsEnabled` defaults to `false` and no
    notification is shown while it is false.
 6. **Login item owned by the OS.** `autostart` is applied through the OS login

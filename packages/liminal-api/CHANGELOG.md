@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.0
+
+Lets a remote options page open external links and screensaver previews.
+
+### Added
+
+- `openUrl(url, openWith?)` — open an external URL in the user's default browser
+  or application via the Tauri `opener` plugin, instead of navigating the options
+  window away from your page. Falls back to
+  `window.open(url, '_blank', 'noopener')` outside Tauri or if the plugin call
+  fails. **Requires the `opener:default` permission on the options window**,
+  which Liminal Screen ships from 0.3.0 — on older app builds the fallback runs
+  and the webview ignores it, so the link appears dead (a warning is logged).
+
+### Changed
+
+- `previewScreensaver()` now resolves the saver URL itself (`saverUrlDebug` when
+  `debug` is on, else `saverUrl`) and calls the backend's
+  `create_preview_window` command directly, instead of invoking
+  `preview_screensaver` and relying on the main window's event relay — the old
+  path didn't work reliably from a remote options page. It throws
+  `LiminalAPIError('No saver URL configured for preview')` when the resolved URL
+  is empty. Same signature; needs app 0.2.0+.
+- Documented both methods in the README, API spec, integration guide and
+  security model, and added an app-compatibility table to the README.
+
 ## 0.2.0 — first public release
 
 Version aligned with the Liminal Screen app release it targets.
