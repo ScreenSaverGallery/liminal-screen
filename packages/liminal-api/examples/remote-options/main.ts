@@ -24,6 +24,7 @@ declare const LiminalAPI: {
     setOptions(p: SetOptionsPayload): Promise<void>;
     resetOptions(): Promise<AppOptions>;
     previewScreensaver(): Promise<void>;
+    openUrl(url: string, openWith?: string): Promise<void>;
     startAutoSync(cb: (o: AppOptions) => void): Promise<() => void>;
     ask(message: string, options?: Record<string, unknown>): Promise<boolean>;
     showMessage(message: string, options?: Record<string, unknown>): Promise<void>;
@@ -170,12 +171,11 @@ function setStatus(connected: boolean, text: string): void {
 async function init(): Promise<void> {
   renderCustomFields();
 
-  const api = typeof LiminalAPI !== 'undefined' ? LiminalAPI.liminalAPI : null;
-
-  if (!api) {
+  if (typeof LiminalAPI === 'undefined') {
     setStatus(false, 'liminal-api not loaded');
     return;
   }
+  const api = LiminalAPI.liminalAPI;
 
   const store = createOptionsStore(api);
 
@@ -285,7 +285,8 @@ async function init(): Promise<void> {
 
   $('save-btn')?.addEventListener('click',    save);
   $('reset-btn')?.addEventListener('click',   reset);
-  $('preview-btn')?.addEventListener('click', () => api.previewScreensaver());
+  $('preview-btn')?.addEventListener('click',    () => api.previewScreensaver());
+  $('open-link-btn')?.addEventListener('click',   () => api.openUrl('https://example.com'));
 
   // Auto-save on any field change
   document.querySelectorAll<HTMLInputElement>('input').forEach((input) => {
