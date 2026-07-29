@@ -42,7 +42,7 @@ import { liminalAPI, createOptionsStore } from '@liminal-screen/api';
 </script>
 ```
 
-Pin an exact version in production — e.g. `@liminal-screen/api@0.3.0`.
+Pin an exact version in production — e.g. `@liminal-screen/api@0.3.1`.
 
 ## Quick Start
 
@@ -256,14 +256,18 @@ backend, so a few need a recent enough app build. Outside Tauri everything falls
 back to mock behaviour, so this only matters for the installed app your fork
 ships.
 
-| Package | Requires app | Notes |
+| Feature | Requires app | Notes |
 |---------|--------------|-------|
-| `0.3.0` | `0.2.0`+ | `previewScreensaver()` uses the `create_preview_window` command |
-| `0.3.0` | `0.3.0`+ | `openUrl()` needs the `opener:default` permission on the options window; without it the call falls back to `window.open()`, which webviews usually block |
-| `0.2.0` | `0.2.0`+ | Updater, notification and autostart fields |
+| Options, reset, custom fields | any | App-defined commands aren't ACL-gated, so these work on any build |
+| Updater, notification and autostart fields | `0.2.0`+ | |
+| `previewScreensaver()` | `0.2.0`+ | Uses the `create_preview_window` command |
+| `openUrl()`, `ask()`, `showMessage()`, `startAutoSync()` | `0.3.0`+ | Need their permission granted to the options page's **remote origin**; the app registers that grant at runtime from `VITE_OPTIONS_URL`. On older builds, package `0.3.1`+ logs a warning and falls back instead of throwing |
 
-Fork developers: if you've customised `src-tauri/capabilities/options.json`, add
-`opener:default` (or `opener:allow-open-url`) to use `openUrl()`.
+Fork developers: if you maintain your own
+`src-tauri/capabilities/options.json`, note that listing a permission isn't
+enough — Tauri scopes capabilities to local content, and your options page is a
+remote origin. See
+[Remote origins and the ACL](docs/INTEGRATION-GUIDE.md#remote-origins-and-the-acl).
 
 ## Documentation
 

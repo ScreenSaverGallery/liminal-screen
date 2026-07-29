@@ -213,6 +213,44 @@ Without the permission the call falls back to `window.open()`, which the webview
 ignores — the link will simply appear dead, with a warning in the console rather
 than a thrown error.
 
+### Remote origins and the ACL
+
+Granting `opener:default` is necessary but *not sufficient*. Tauri scopes every
+capability to **local** content unless it declares remote URLs, so a page served
+from `http://localhost:4200` or `https://your-domain.com` is denied even when the
+permission is listed:
+
+```
+opener.open_url not allowed on window "options", webview "options",
+URL: http://localhost:4200/
+
+allowed on: [windows: "main", URL: local], [windows: "options", URL: local]
+```
+
+This affects every core and plugin command the page uses — `openUrl()`,
+`ask()`, `showMessage()` and the event subscription behind `startAutoSync()`.
+App-defined commands (`getOptions`, `setOptions`, `previewScreensaver`, …) are
+not ACL-gated, which is why they keep working and the failure looks selective.
+
+Liminal Screen 0.3.0+ handles this for you: because `VITE_OPTIONS_URL` is only
+known at runtime, the app registers a capability for your options page's origin
+when it opens the window. If you maintain your own fork of the Rust code, either
+do the same or declare the origin statically:
+
+```json
+{
+  "identifier": "options-capability",
+  "windows": ["options"],
+  "remote": { "urls": ["https://your-domain.com"] },
+  "permissions": ["dialog:allow-ask", "dialog:allow-message", "opener:default"]
+}
+```
+
+The grant is matched per origin (scheme + host + port), and paths, query strings
+and fragments are wildcarded — so SPA routing on the same origin keeps working.
+A static list can't adapt to a `.env`-configured URL, which is why the runtime
+grant exists.
+
 ## Screensaver Preview
 
 ```javascript

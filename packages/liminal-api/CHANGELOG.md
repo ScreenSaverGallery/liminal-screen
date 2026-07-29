@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.3.1
+
+Error-handling fixes for remotely-hosted options pages.
+
+### Fixed
+
+- `ask()`, `showMessage()`, `startAutoSync()` and `onUpdateAvailable()` now
+  degrade instead of failing hard when the IPC call is rejected.
+
+  Tauri's ACL scopes every capability to *local* content unless it declares
+  remote origins, so on a page served over http(s) these plugin and core commands
+  were denied even though the options window's capability lists them. App-defined
+  commands (`getOptions`, `setOptions`, `previewScreensaver`, …) aren't ACL-gated,
+  which made the failures look arbitrary:
+
+  - `ask()` / `showMessage()` rejected instead of falling back to
+    `confirm()` / `alert()` — so a reset confirmation dialog broke the flow
+  - `onUpdateAvailable()` produced an unhandled promise rejection
+  - `startAutoSync()` rejected, and `createOptionsStore()` swallows that error —
+    so live option updates silently stopped working, with no symptom to notice
+
+  Each now logs a warning and falls back, matching what `openUrl()` already did.
+  Liminal Screen 0.3.0+ grants the permissions to the options page's origin at
+  runtime, so the native paths work there; the fallbacks cover older builds.
+
+### Changed
+
+- Documented the remote-origin ACL requirement — the cause of
+  `opener.open_url not allowed on window "options" … URL: local` — in the
+  integration guide, with the capability JSON forks need if they maintain their
+  own `options.json`.
+
 ## 0.3.0
 
 Lets a remote options page open external links and screensaver previews.

@@ -444,6 +444,68 @@ fn build_init_script(options: &AppOptions) -> String {
     )
 }
 
+/// Core and plugin permissions the remote options page needs.
+///
+/// App-defined commands (`get_options`, `set_options`, `create_preview_window`, …)
+/// are not ACL-gated, but core (`core:`) and plugin commands are — and every
+/// capability is scoped to *local* content unless it declares remote URLs. So the
+/// grants in `capabilities/options.json` don't apply to a page served over
+/// http(s): the call is rejected with
+/// `opener.open_url not allowed on window "options" … allowed on: [windows: "options", URL: local]`.
+const REMOTE_OPTIONS_PERMISSIONS: [&str; 5] = [
+    // liminalAPI.openUrl()
+    "opener:allow-open-url",
+    // liminalAPI.ask() / showMessage()
+    "dialog:allow-ask",
+    "dialog:allow-message",
+    // liminalAPI.startAutoSync() and the unsubscribe it returns
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+];
+
+/// Registered once per process — reopening the options window must not stack
+/// duplicate grants onto the runtime authority.
+static REMOTE_OPTIONS_GRANT: std::sync::Once = std::sync::Once::new();
+
+/// Grant [`REMOTE_OPTIONS_PERMISSIONS`] to the fork's own options origin.
+///
+/// The URL comes from `VITE_OPTIONS_URL` and is only known at runtime, so this
+/// can't live in a static capability file — forks configure `.env`, not the ACL.
+/// The grant is scoped to the options window and to that one origin, and is
+/// additive: `add_capability` merges into the compiled ACL rather than replacing it.
+///
+/// Scoped to the origin rather than the exact URL on purpose — an options page is
+/// usually a SPA, so client-side routing would otherwise break IPC after the first
+/// navigation. Same-origin pages are equally trusted: the fork controls them all.
+fn grant_remote_options_permissions<R: Runtime>(app: &AppHandle<R>, url: &url::Url) {
+    let origin = url.origin();
+    if !origin.is_tuple() {
+        // Opaque origin (file:, data:) — nothing meaningful to scope a grant to.
+        return;
+    }
+    let origin = origin.ascii_serialization();
+
+    REMOTE_OPTIONS_GRANT.call_once(|| {
+        let mut capability = tauri::ipc::CapabilityBuilder::new("options-remote-capability")
+            // Local content in this window is already covered by options.json.
+            .local(false)
+            .remote(origin.clone())
+            .window(OPTIONS_LABEL);
+        for permission in REMOTE_OPTIONS_PERMISSIONS {
+            capability = capability.permission(permission);
+        }
+
+        match app.add_capability(capability) {
+            Ok(()) => println!("[options] Granted remote IPC permissions to {}", origin),
+            Err(e) => eprintln!(
+                "[options] Warning: could not grant remote IPC permissions to {}: {}. \
+                 Dialogs, openUrl() and live option sync will not work on the options page.",
+                origin, e
+            ),
+        }
+    });
+}
+
 /// Open the remote options window
 fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> Result<(), String> {
     // Check if options window already exists
@@ -471,6 +533,9 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
             params.append_pair("appDescription", &options.app_description);
         }
     }
+
+    // Must happen before the webview loads, so the page's first IPC call is allowed.
+    grant_remote_options_permissions(app, &url);
 
     let options_title = format!("{} Options", options.app_name);
     let window = WebviewWindowBuilder::new(app, OPTIONS_LABEL, WebviewUrl::External(url))

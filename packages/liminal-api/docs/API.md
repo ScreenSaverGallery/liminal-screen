@@ -211,8 +211,12 @@ await liminalAPI.openUrl('mailto:support@example.com');
 ```
 
 Requires the `opener:default` (or `opener:allow-open-url`) permission on the
-options window's capability — shipped from Liminal Screen 0.3.0. The plugin's
-default scope permits `http:`, `https:`, `mailto:` and `tel:`.
+options window's capability, **granted to the page's own remote origin** — Tauri
+scopes capabilities to local content by default, so listing the permission is not
+enough on its own. Liminal Screen 0.3.0+ registers that grant at runtime from
+`VITE_OPTIONS_URL`; see
+[INTEGRATION-GUIDE.md](INTEGRATION-GUIDE.md#remote-origins-and-the-acl). The
+plugin's default scope permits `http:`, `https:`, `mailto:` and `tel:`.
 
 If the plugin call fails (missing permission, blocked scheme) the error is logged
 as a warning and the method falls back to

@@ -154,7 +154,11 @@ export class LiminalAPI {
   async ask(message: string, options?: Record<string, unknown>): Promise<boolean> {
     const dialog = tauriDialog();
     if (dialog) {
-      return dialog.ask(message, options);
+      try {
+        return await dialog.ask(message, options);
+      } catch (e) {
+        console.warn('[liminal-api] dialog plugin failed, falling back to confirm()', e);
+      }
     }
     if (typeof window === 'undefined') return false;
     return window.confirm(message);
@@ -193,7 +197,12 @@ export class LiminalAPI {
   async showMessage(message: string, options?: Record<string, unknown>): Promise<void> {
     const dialog = tauriDialog();
     if (dialog) {
-      return dialog.message(message, options);
+      try {
+        await dialog.message(message, options);
+        return;
+      } catch (e) {
+        console.warn('[liminal-api] dialog plugin failed, falling back to alert()', e);
+      }
     }
     if (typeof window === 'undefined') return;
     window.alert(message);
@@ -321,20 +330,31 @@ export class LiminalAPI {
    * whenever options change (e.g. user saves from another window).
    * Also re-dispatches to the window event bus so onOptionsUpdate() listeners fire.
    * Returns an unsubscribe function.
+   *
+   * Never throws: if the event listener can't be registered — e.g. the options
+   * window's capability doesn't grant `core:event:allow-listen` to the page's
+   * remote origin — the failure is logged and a no-op unsubscribe is returned, so
+   * the page still works without live updates.
    */
   async startAutoSync(callback: (options: AppOptions) => void): Promise<() => void> {
     const listen = tauriListen();
     if (!listen) return () => {};
 
-    const unlisten = await listen('options-updated', (event) => {
-      const options = event.payload as AppOptions;
-      callback(options);
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(
-          new CustomEvent<AppOptions>('liminal:options-updated', { detail: options }),
-        );
-      }
-    });
+    let unlisten: () => void;
+    try {
+      unlisten = await listen('options-updated', (event) => {
+        const options = event.payload as AppOptions;
+        callback(options);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent<AppOptions>('liminal:options-updated', { detail: options }),
+          );
+        }
+      });
+    } catch (e) {
+      console.warn('[liminal-api] could not subscribe to options-updated events', e);
+      return () => {};
+    }
 
     this.unlisteners.push(unlisten);
     return unlisten;
@@ -374,13 +394,17 @@ export class LiminalAPI {
 
   /**
    * Subscribe to `update-available` events (fired by both the startup check
-   * and manual checks). Returns an unsubscribe function. No-op outside Tauri.
+   * and manual checks). Returns an unsubscribe function. No-op outside Tauri, or
+   * if the subscription is rejected by the window's capability.
    */
   onUpdateAvailable(callback: (info: UpdateInfo) => void): () => void {
     const listen = tauriListen();
     if (!listen) return () => {};
     const unlistenPromise = listen('update-available', (event) => {
       callback(event.payload as UpdateInfo);
+    }).catch((e) => {
+      console.warn('[liminal-api] could not subscribe to update-available events', e);
+      return () => {};
     });
     unlistenPromise.then((unlisten) => this.unlisteners.push(unlisten));
     return () => {
