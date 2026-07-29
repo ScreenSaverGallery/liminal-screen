@@ -65,6 +65,11 @@ export class LiminalAPIError extends Error {
   }
 }
 
+// ── Constants ───────────────────────────────────────────────────────────────
+
+/** Webview window label used for the preview opened from remote options. */
+const PREVIEW_LABEL = 'liminal-preview';
+
 // ── Mock defaults (used in non-Tauri environments) ──────────────────────────
 
 const MOCK_OPTIONS: AppOptions = {
@@ -156,6 +161,33 @@ export class LiminalAPI {
   }
 
   /**
+   * Open an external URL in the user's default browser/application via the
+   * Tauri `opener` plugin. Falls back to `window.open(url, '_blank')` outside
+   * Tauri or if the opener call fails.
+   *
+   * Requires the `opener:default` (or `opener:allow-open-url`) permission in the
+   * window's capability. The opener scope permits `http:`, `https:`, `mailto:`
+   * and `tel:` by default.
+   *
+   * @param url      The URL to open.
+   * @param openWith Optional application name to open the URL with.
+   */
+  async openUrl(url: string, openWith?: string): Promise<void> {
+    const invoke = tauriInvoke();
+    if (invoke) {
+      try {
+        await invoke('plugin:opener|open_url', { url, with: openWith });
+        return;
+      } catch (e) {
+        console.warn('[liminal-api] opener plugin failed, falling back to window.open', e);
+      }
+    }
+    if (typeof window !== 'undefined') {
+      window.open(url, '_blank', 'noopener');
+    }
+  }
+
+  /**
    * Show a message dialog. Falls back to window.alert() in non-Tauri environments.
    */
   async showMessage(message: string, options?: Record<string, unknown>): Promise<void> {
@@ -167,7 +199,13 @@ export class LiminalAPI {
     window.alert(message);
   }
 
-  /** Trigger a screensaver preview. */
+  /**
+   * Open a screensaver preview window. Reads the current saver URL from the
+   * backend (honoring the debug flag) and creates a dedicated preview webview
+   * directly via the `create_preview_window` command — no dependency on the
+   * main window's event relay, so it works reliably from remote options pages.
+   * No-op outside Tauri.
+   */
   async previewScreensaver(): Promise<void> {
     const invoke = tauriInvoke();
     if (!invoke) {
@@ -175,8 +213,14 @@ export class LiminalAPI {
       return;
     }
     try {
-      await invoke('preview_screensaver');
+      const opts = await this.getOptions();
+      const url = opts.debug ? opts.saverUrlDebug : opts.saverUrl;
+      if (!url) {
+        throw new LiminalAPIError('No saver URL configured for preview');
+      }
+      await invoke('create_preview_window', { url, label: PREVIEW_LABEL });
     } catch (e) {
+      if (e instanceof LiminalAPIError) throw e;
       throw new LiminalAPIError('Failed to preview screensaver', e);
     }
   }
