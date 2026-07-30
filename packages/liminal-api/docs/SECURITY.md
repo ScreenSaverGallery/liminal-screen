@@ -20,6 +20,8 @@ What the library can do:
 
 - read and write user options (`getOptions`, `setOptions`, `resetOptions`)
 - open a screensaver preview window pointed at the fork's own saver URL
+- close its own options window (`closeOptions`) — the command only ever targets
+  the `options` label, so a page can't close the main or saver windows
 - open external URLs in the user's browser (`openUrl`), within the opener
   plugin's scheme scope
 - read the app version

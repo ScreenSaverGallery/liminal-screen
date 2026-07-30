@@ -568,6 +568,28 @@ async fn open_options(app: AppHandle) -> Result<(), String> {
     open_options_or_fallback(&app)
 }
 
+/// Command to close the options window, so a remote options page can offer its
+/// own "Close" button (`liminalAPI.closeOptions()`).
+///
+/// Deliberately an app command rather than the core window API: `window.close()`
+/// from a remote page needs `core:window:allow-close` granted to that page's
+/// origin, and a denied core command surfaces as nothing happening. App-defined
+/// commands aren't ACL-gated, so this works on any fork without widening what a
+/// remote page is allowed to do.
+///
+/// A no-op when the window is already gone. `close()` rather than `destroy()`:
+/// same path the window's own close button takes.
+#[tauri::command]
+async fn close_options<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(OPTIONS_LABEL) {
+        app.run_on_main_thread(move || {
+            let _ = window.close();
+        })
+        .map_err(|e| format!("Failed to close options window: {}", e))?;
+    }
+    Ok(())
+}
+
 /// Command to get app options
 #[tauri::command]
 fn get_options(state: tauri::State<AppState>) -> Result<AppOptions, String> {
@@ -1034,6 +1056,7 @@ pub fn run() {
             create_preview_window,
             evaluate_javascript,
             open_options,
+            close_options,
             preview_screensaver,
             navigate_webview,
             add_active_saver,

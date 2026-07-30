@@ -13,6 +13,7 @@ The Liminal Screen API lets remote options pages communicate with the Tauri back
 - **Reactive store**: `createOptionsStore()` provides a `Signal`-based reactive state kept in sync with the backend
 - **Native dialogs**: `ask()` and `showMessage()` use Tauri's dialog plugin when available, fall back to `confirm()`/`alert()`
 - **External links**: `openUrl()` opens links in the user's real browser instead of hijacking the options window
+- **Window control**: `closeOptions()` lets the page dismiss its own window
 - **Screensaver preview**: `previewScreensaver()` opens a windowed preview of the configured saver URL
 - **Event sync**: `startAutoSync()` pushes real-time option updates from the backend
 - **System screensaver control**: detect a conflicting OS screensaver and disable/restore it so Liminal is the only screensaver
@@ -124,6 +125,15 @@ document.getElementById('preview-btn').addEventListener('click', async () => {
 });
 ```
 
+### Save and close
+
+```javascript
+document.getElementById('done-btn').addEventListener('click', async () => {
+  await store.save(collectedFormData);   // the window takes unsaved state with it
+  await liminalAPI.closeOptions();
+});
+```
+
 ### System screensaver conflict
 
 Liminal is meant to be the *only* screensaver — a system screensaver on an overlapping timer draws over Liminal. Detect one and offer to disable it (the prior timeout is saved so it can be restored):
@@ -176,6 +186,7 @@ document.getElementById('version').textContent = `v${await liminalAPI.getVersion
 | `resetOptions()` | `Promise<AppOptions>` | Reset to `.env` defaults |
 | `previewScreensaver()` | `Promise<void>` | Open a preview window for the configured saver URL |
 | `openUrl(url, openWith?)` | `Promise<void>` | Open an external URL in the user's default browser/app |
+| `closeOptions()` | `Promise<void>` | Close the options window this page runs in |
 | `getVersion()` | `Promise<string>` | Running app version (e.g. `"0.3.0"`) |
 | `getOsScreensaverStatus()` | `Promise<OsScreensaverStatus>` | Read the OS-native screensaver config (conflict detection) |
 | `disableOsScreensaver()` | `Promise<void>` | Disable the OS screensaver so it can't cover Liminal (prior value saved) |
@@ -262,6 +273,7 @@ ships.
 | Updater, notification and autostart fields | `0.2.0`+ | |
 | `previewScreensaver()` | `0.2.0`+ | Uses the `create_preview_window` command |
 | `openUrl()`, `ask()`, `showMessage()`, `startAutoSync()` | `0.3.0`+ | Need their permission granted to the options page's **remote origin**; the app registers that grant at runtime from `VITE_OPTIONS_URL`. On older builds, package `0.3.1`+ logs a warning and falls back instead of throwing |
+| `closeOptions()` | `0.3.0`+ | Needs the `close_options` command; rejects with `LiminalAPIError` on older builds |
 
 Fork developers: if you maintain your own
 `src-tauri/capabilities/options.json`, note that listing a permission isn't

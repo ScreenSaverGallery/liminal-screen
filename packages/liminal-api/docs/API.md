@@ -224,6 +224,31 @@ as a warning and the method falls back to
 missing permission looks like "nothing happened", not an exception. Check the
 webview console when a link seems dead.
 
+### `closeOptions(): Promise<void>`
+
+Close the options window this page is running in — for a "Close" or "Done" button.
+
+```javascript
+$('done-btn').addEventListener('click', async () => {
+  await store.save(collectForm());
+  await liminalAPI.closeOptions();
+});
+```
+
+Closes the *window*, not just the page, so unsaved form state is discarded — save
+first if that matters. A no-op when the window is already closed, and outside
+Tauri.
+
+This goes through the app's `close_options` command rather than Tauri's window
+API. A remote page calling `getCurrentWindow().close()` would need
+`core:window:allow-close` granted to its own origin, and a denied core command
+surfaces as nothing happening at all; app-defined commands aren't ACL-gated, so
+this path can't fail that way. Requires Liminal Screen 0.3.0+ — on older builds it
+rejects with `LiminalAPIError` rather than failing silently.
+
+Not to be confused with [`destroy()`](#destroy-void), which detaches event
+listeners and leaves the window open.
+
 ### `getVersion(): Promise<string>`
 
 The running application version (e.g. `"0.3.0"`). Reads the injected `navigator.liminalScreen.version` snapshot when present (no IPC), otherwise asks the backend. Returns an empty string outside Tauri.
@@ -425,7 +450,7 @@ if (liminalAPI.isInTauri) {
 
 In Tauri: all operations use real IPC via `window.__TAURI__.core.invoke`.
 
-In browsers: `getOptions()` returns mock defaults, `setOptions()` logs to console, `ask()`/`showMessage()` fall back to `confirm()`/`alert()`, `openUrl()` falls back to `window.open()`, and `previewScreensaver()` is a no-op.
+In browsers: `getOptions()` returns mock defaults, `setOptions()` logs to console, `ask()`/`showMessage()` fall back to `confirm()`/`alert()`, `openUrl()` falls back to `window.open()`, and `previewScreensaver()`/`closeOptions()` are no-ops.
 
 ## Integration Guide
 

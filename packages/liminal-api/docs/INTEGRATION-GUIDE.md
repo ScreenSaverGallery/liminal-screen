@@ -268,6 +268,24 @@ The preview opens the saver URL for the *current* `debug` setting in an 800×600
 window. Save the form before previewing if you want the user's unsaved changes
 reflected — the backend reads persisted options, not your form state.
 
+## Closing the Options Window
+
+The window has its own close button, but a "Done" action on the page is often
+better UX — especially with auto-save, where the user has no other signal that
+they're finished:
+
+```javascript
+$('done-btn').addEventListener('click', async () => {
+  await store.save(collectForm());   // unsaved state dies with the window
+  await liminalAPI.closeOptions();
+});
+```
+
+Don't reach for `window.close()` or `getCurrentWindow().close()`: the former is
+ignored in a webview, and the latter needs `core:window:allow-close` granted to
+your page's origin. `closeOptions()` goes through an app command, which isn't
+ACL-gated. Requires Liminal Screen 0.3.0+.
+
 ## Environment Detection
 
 ```javascript

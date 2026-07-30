@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- `closeOptions()` — close the options window from the page itself, for a
+  "Close"/"Done" button. Backed by the app's `close_options` command rather than
+  the Tauri window API: a remote page would otherwise need
+  `core:window:allow-close` granted to its origin, and a denied core command just
+  looks like nothing happening. App commands aren't ACL-gated, so this works
+  without widening what a remote page may do. Requires app 0.3.0+; a no-op
+  outside Tauri, and when the window is already closed.
+
+  Named `closeOptions()`, not `close()`, to keep it distinct from `destroy()`,
+  which only detaches event listeners and leaves the window alone.
+
 ## 0.3.1
 
 Error-handling fixes for remotely-hosted options pages.

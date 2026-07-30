@@ -235,6 +235,30 @@ export class LiminalAPI {
   }
 
   /**
+   * Close the options window this page is running in — for a "Close" or "Done"
+   * button on the options page.
+   *
+   * Uses the backend's `close_options` command rather than the Tauri window API,
+   * which a remote page can't reach without being granted window permissions on
+   * its own origin. A no-op if the window is already gone, and outside Tauri.
+   *
+   * Note this closes the *window*, not just the page: any unsaved form state goes
+   * with it, so call `setOptions()` (or `store.save()`) first if that matters.
+   */
+  async closeOptions(): Promise<void> {
+    const invoke = tauriInvoke();
+    if (!invoke) {
+      console.log('[liminal-api] mock closeOptions');
+      return;
+    }
+    try {
+      await invoke('close_options');
+    } catch (e) {
+      throw new LiminalAPIError('Failed to close the options window', e);
+    }
+  }
+
+  /**
    * The running application version. Reads the injected navigator.liminalScreen
    * snapshot when present (zero IPC), else asks the backend. Empty outside Tauri.
    */

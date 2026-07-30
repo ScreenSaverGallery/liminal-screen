@@ -1,6 +1,6 @@
 {
   "name": "@liminal-screen/api",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "IPC bridge for Liminal Screen remote options pages. Works as npm package or CDN script.",
   "type": "module",
   "main": "./dist/index.js",
