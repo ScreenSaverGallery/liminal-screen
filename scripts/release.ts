@@ -6,15 +6,21 @@
 //
 // 1. Verifies the working tree is clean, the branch is `main`, and local
 //    `main` is up to date with origin.
-// 2. Bumps the version in package.json (the committed source of truth for
-//    releases) and in the local, gitignored `.env` (to keep dev in sync).
-// 3. Commits, tags `vX.Y.Z`, and pushes.
+// 2. Computes the next version from the latest tag (tags are the source of
+//    truth for releases — not package.json) and bumps the local, gitignored
+//    `.env` to keep dev in sync.
+// 3. Tags `vX.Y.Z` and pushes the tag. **No commit, no `main` push.**
+//
+// The committed version files (`package.json`, `src-tauri/Cargo.toml`,
+// `src-tauri/Cargo.lock`) are NOT bumped here — the release CI workflow
+// stamps them from the tag on the runner via `scripts/stamp-version.ts`.
+// This keeps `main` a clean fast-forward of upstream: a fork can cut its own
+// releases without diverging from upstream's commit history.
 //
 // The tag push triggers `.github/workflows/release.yml`, which builds the
 // macOS/Windows/Linux bundles and publishes a draft GitHub release. The
 // release env config (URLs, updater pubkey, branding) is NOT committed —
-// CI reads it from the RELEASE_ENV repository secret and stamps the version
-// from the tag. Set it once with:
+// CI reads it from the RELEASE_ENV repository secret. Set it once with:
 //
 //   gh secret set RELEASE_ENV < .env
 
@@ -23,13 +29,23 @@ import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
 const ROOT = process.cwd();
-const PKG_PATH = join(ROOT, "package.json");
 const ENV_PATH = join(ROOT, ".env");
-const CARGO_TOML_PATH = join(ROOT, "src-tauri", "Cargo.toml");
-const CARGO_LOCK_PATH = join(ROOT, "src-tauri", "Cargo.lock");
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 const RELEASE_BRANCH = "main";
+
+/** Latest `vX.Y.Z` tag, or null if none. Tags are the release source of truth. */
+function latestTagVersion(): string | null {
+  try {
+    const tag = execSync("git describe --tags --abbrev=0", {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "ignore"],
+    }).trim();
+    return tag.replace(/^v/, "");
+  } catch {
+    return null;
+  }
+}
 
 function fail(message: string): never {
   console.error(`[release] ERROR: ${message}`);
@@ -59,34 +75,7 @@ function bump(current: string, kind: string): string {
   }
 }
 
-/**
- * Bump the crate version in src-tauri/Cargo.toml and its Cargo.lock entry.
- * CARGO_PKG_VERSION is baked into the binary (used in the injected
- * `navigator.userAgent` suffix and `navigator.liminalScreen.version`), so a
- * stale crate version means remote saver pages see the wrong app version.
- */
-function setCargoVersion(version: string): void {
-  const toml = readFileSync(CARGO_TOML_PATH, "utf-8");
-  const nameMatch = toml.match(/^name\s*=\s*"([^"]+)"/m);
-  const versionRe = /^(version\s*=\s*)"[^"]*"/m;
-  if (!nameMatch || !versionRe.test(toml)) {
-    fail(`Could not find package name/version in ${CARGO_TOML_PATH}.`);
-  }
-  writeFileSync(CARGO_TOML_PATH, toml.replace(versionRe, `$1"${version}"`));
-
-  // Keep Cargo.lock in sync so builds with --locked don't fail and the diff
-  // stays honest. The lock entry is `name = "<crate>"` followed by `version`.
-  const lock = readFileSync(CARGO_LOCK_PATH, "utf-8");
-  const lockRe = new RegExp(
-    `(name = "${nameMatch[1]}"\\nversion = )"[^"]*"`,
-  );
-  if (!lockRe.test(lock)) {
-    fail(`Could not find crate "${nameMatch[1]}" in ${CARGO_LOCK_PATH}.`);
-  }
-  writeFileSync(CARGO_LOCK_PATH, lock.replace(lockRe, `$1"${version}"`));
-}
-
-/** Replace the VITE_APP_VERSION line in a .env-style file. */
+/** Replace the VITE_APP_VERSION line in a .env-style file (gitignored). */
 function setEnvVersion(path: string, version: string): void {
   const content = readFileSync(path, "utf-8");
   const re = /^VITE_APP_VERSION=.*$/m;
@@ -129,25 +118,24 @@ function main(): void {
     fail(`Local ${RELEASE_BRANCH} is ${behind} commit(s) behind origin — pull first.`);
   }
 
-  // --- Compute and apply the bump -------------------------------------------
-  const pkg = JSON.parse(readFileSync(PKG_PATH, "utf-8"));
-  const next = bump(pkg.version, kind);
+  // --- Compute the bump (tags are the source of truth, not package.json) -----
+  // Fall back to package.json version only if no tag exists yet (first release).
+  const current = latestTagVersion() ??
+    JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8")).version;
+  const next = bump(current, kind);
   const tag = `v${next}`;
 
   if (git(`tag -l ${tag}`) !== "") fail(`Tag ${tag} already exists.`);
 
-  console.log(`[release] ${pkg.version} -> ${next}`);
-  pkg.version = next;
-  writeFileSync(PKG_PATH, JSON.stringify(pkg, null, 2) + "\n");
-  setCargoVersion(next);
+  console.log(`[release] ${current} -> ${next}`);
+  // .env is gitignored; bumping it only keeps local dev in sync with the
+  // just-released version. No committed file is touched.
   if (existsSync(ENV_PATH)) setEnvVersion(ENV_PATH, next);
 
-  // --- Commit, tag, push -----------------------------------------------------
-  git("add package.json src-tauri/Cargo.toml src-tauri/Cargo.lock");
-  git(`commit -m "release: ${tag}"`);
+  // --- Tag and push (no commit, no main push) --------------------------------
   git(`tag -a ${tag} -m "release: ${tag}"`);
-  console.log(`[release] Pushing ${RELEASE_BRANCH} and ${tag}...`);
-  git(`push origin ${RELEASE_BRANCH} ${tag}`);
+  console.log(`[release] Pushing ${tag}...`);
+  git(`push origin ${tag}`);
 
   // Works for both SSH and HTTPS remotes, including SSH host aliases
   // (e.g. git@github.com-tomaszatoo:tomaszatoo/liminal-screen.git).
