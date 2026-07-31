@@ -120,9 +120,9 @@ bun run tauri:build
 
 ## Releases (CI/CD)
 
-Releases are cut with one command. `bun run tauri:release` bumps the version, commits, tags `vX.Y.Z`, and pushes; the tag triggers `.github/workflows/release.yml`, which builds bundles for **macOS** (universal `.dmg`), **Windows** (`.msi`/`.exe`), and **Linux** (`.deb`/`.rpm`/AppImage), signs the updater artifacts, and publishes everything — including the `latest.json` manifest the auto-updater consumes — to a **draft** GitHub release.
+Releases are cut with one command. `bun run tauri:release` computes the next version (from the latest tag), tags `vX.Y.Z`, and pushes the tag — **no version-bump commit is pushed to `main`**, so a fork's `main` stays a clean fast-forward of upstream. The tag triggers `.github/workflows/release.yml`, which stamps the version from the tag into `package.json` / `src-tauri/Cargo.toml` / `src-tauri/Cargo.lock` *on the runner*, then builds bundles for **macOS** (universal `.dmg`), **Windows** (`.msi`/`.exe`), and **Linux** (`.deb`/`.rpm`/AppImage), signs the updater artifacts, and publishes everything — including the `latest.json` manifest the auto-updater consumes — to a **draft** GitHub release.
 
-The release config (URLs, updater pubkey, branding) is intentionally **not committed** — CI reads it from the `RELEASE_ENV` repository secret and stamps the version from the tag, so nothing fork-specific is baked into git history.
+The release config (URLs, updater pubkey, branding) is intentionally **not committed** — CI reads it from the `RELEASE_ENV` repository secret and stamps the version from the tag, so nothing fork-specific is baked into git history. The committed version files are stamped in CI too (not bumped locally), which is why cutting a release no longer creates a fork-local commit and a fork's `main` can mirror upstream cleanly.
 
 ### One-Time Setup
 
@@ -164,7 +164,7 @@ When the build finishes, **review the draft release and publish it manually**. P
 
 ### Keeping the Config in Sync
 
-- **Version bumps** need no secret changes — CI stamps `VITE_APP_VERSION` from the tag.
+- **Version bumps** need no secret changes and create no commit on `main` — CI stamps `VITE_APP_VERSION` and the committed version files from the tag.
 - **URL or branding changes**: update your local `.env`, then re-run `gh secret set RELEASE_ENV < .env`.
 - **Code signing**: builds are not notarized (macOS) or Authenticode-signed (Windows) — users see the usual Gatekeeper/SmartScreen warnings. Apple/Windows certificates can be added to the workflow later without structural changes.
 

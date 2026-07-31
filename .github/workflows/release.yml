@@ -1,5 +1,12 @@
-# Release pipeline — triggered by `bun run tauri:release`, which bumps the
-# version, commits, and pushes a `vX.Y.Z` tag.
+# Release pipeline — triggered by `bun run tauri:release`, which computes
+# the next version, tags `vX.Y.Z`, and pushes the tag. No version-bump commit
+# is pushed to `main`, so a fork's `main` stays a clean fast-forward of
+# upstream.
+#
+# The committed version files (`package.json`, `src-tauri/Cargo.toml`,
+# `src-tauri/Cargo.lock`) are stamped from the tag *on the runner* by
+# `scripts/stamp-version.ts` before the build, so `CARGO_PKG_VERSION` and the
+# reported app version always equal the tag without any committed bump.
 #
 # Builds bundles for macOS (universal), Windows, and Linux, signs the updater
 # artifacts, and publishes everything (installers + latest.json) to a DRAFT
@@ -73,16 +80,6 @@ jobs:
             printf 'VITE_APP_VERSION="%s"\n' "$version" >> .env
           fi
 
-      - name: Verify tag matches package.json version
-        shell: bash
-        run: |
-          version=$(jq -r .version package.json)
-          tag="${GITHUB_REF_NAME#v}"
-          if [ "$version" != "$tag" ]; then
-            echo "::error::Tag v${tag} does not match package.json version ${version} — cut releases with \`bun run tauri:release\`." >&2
-            exit 1
-          fi
-
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -126,6 +123,16 @@ jobs:
 
       - name: Generate Tauri runtime config
         run: bun run scripts/build-tauri-config.ts
+
+      # Stamp the committed version files from the tag *on the runner* so the
+      # bundle/CARGO_PKG_VERSION always equals the tag, with no version-bump
+      # commit on `main`. Must run after `bun install` and before the build.
+      - name: Stamp committed version files from tag
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          bun run scripts/stamp-version.ts "$version"
+          echo "Stamped $version into package.json / Cargo.toml / Cargo.lock"
 
       - name: Build and upload release
         uses: tauri-apps/tauri-action@v0
