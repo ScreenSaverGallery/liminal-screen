@@ -31,6 +31,8 @@ fn init_env() {
     }
 }
 
+/// Preview window label (singleton, reused across previews)
+const PREVIEW_LABEL: &str = "preview";
 /// Options window label
 const OPTIONS_LABEL: &str = "options";
 /// Main window label
@@ -506,15 +508,106 @@ fn grant_remote_options_permissions<R: Runtime>(app: &AppHandle<R>, url: &url::U
     });
 }
 
-/// Open the remote options window
-fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> Result<(), String> {
-    // Check if options window already exists
-    if let Some(window) = app.get_webview_window(OPTIONS_LABEL) {
-        let _ = window.show();
-        let _ = window.set_focus();
-        return Ok(());
+/// Park a webview window instead of destroying it: stop media, navigate to
+/// `about:blank`, and hide. Must be called on the main thread.
+///
+/// This is the cross-platform workaround for the wry/macOS behavior where
+/// `WebviewWindow::destroy()` intentionally retains the underlying WKWebView
+/// object to avoid crashes, which leaves the URL-named helper processes alive
+/// in Activity Monitor and causes memory to climb with every create/destroy
+/// cycle. By parking (hiding + blanking) the window and reusing it later, we
+/// avoid that leak entirely.
+pub fn park_webview_window<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) {
+    // Blank the webview first so the user never sees stale content, then hide.
+    // Hiding a window that just exited native fullscreen can fail on macOS if
+    // the fullscreen-space animation hasn't settled, so callers should leave
+    // fullscreen and wait before parking (see screensaver_engine::close_all_savers).
+    let window = window.clone();
+    autoplay_media::stop_webview(&window);
+    let window = window.clone();
+    if let Ok(url) = "about:blank".parse() {
+        if let Err(e) = window.navigate(url) {
+            println!("Warning: Failed to navigate window to about:blank: {}", e);
+        }
+    }
+    let window = window.clone();
+    if let Err(e) = window.set_fullscreen(false) {
+        println!(
+            "Warning: Failed to ensure window exited fullscreen before hide: {}",
+            e
+        );
+    }
+    let window = window.clone();
+    if let Err(e) = window.set_always_on_top(false) {
+        println!("Warning: Failed to clear always-on-top before hide: {}", e);
+    }
+    let window = window.clone();
+    if let Err(e) = window.hide() {
+        println!("Warning: Failed to hide parked window: {}", e);
+    } else {
+        println!("Parked window hidden successfully");
     }
 
+    // macOS fallback: if the cross-platform hide doesn't actually remove the
+    // window (e.g. it's still transitioning out of fullscreen), force the
+    // native NSWindow to become transparent and order it out explicitly.
+    #[cfg(target_os = "macos")]
+    force_hide_macos_window(&window);
+}
+
+/// macOS-specific last-resort hide: set NSWindow alpha to 0 and order it out.
+/// This works even when Tauri's `hide()` is ignored during/after a fullscreen
+/// transition, which is the root cause of the parked saver window staying
+/// visible as a white box.
+#[cfg(target_os = "macos")]
+fn force_hide_macos_window<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    let label = window.label().to_string();
+    if let Err(e) = window.with_webview(move |pw| unsafe {
+        let wkwebview = &*(pw.inner() as *mut AnyObject);
+        let ns_window: *mut AnyObject = msg_send![wkwebview, window];
+        if ns_window.is_null() {
+            println!("macOS force_hide: NSWindow is null for {}", label);
+            return;
+        }
+        let _: () = msg_send![&*ns_window, setAlphaValue: 0.0_f64];
+        let _: () = msg_send![&*ns_window, setIgnoresMouseEvents: true];
+        let _: () = msg_send![&*ns_window, orderOut: std::ptr::null::<AnyObject>()];
+        println!("macOS force_hide applied to {}", label);
+    }) {
+        println!(
+            "Warning: macOS force_hide failed for {}: {}",
+            window.label(),
+            e
+        );
+    }
+}
+
+/// macOS-specific restore after parking: undo the alpha/orderOut changes so the
+/// window is visible and interactive when it is reused for the next activation.
+#[cfg(target_os = "macos")]
+pub fn restore_macos_window<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    let label = window.label().to_string();
+    let _ = window.with_webview(move |pw| unsafe {
+        let wkwebview = &*(pw.inner() as *mut AnyObject);
+        let ns_window: *mut AnyObject = msg_send![wkwebview, window];
+        if ns_window.is_null() {
+            println!("macOS restore: NSWindow is null for {}", label);
+            return;
+        }
+        let _: () = msg_send![&*ns_window, setAlphaValue: 1.0_f64];
+        let _: () = msg_send![&*ns_window, setIgnoresMouseEvents: false];
+        println!("macOS restore applied to {}", label);
+    });
+}
+
+/// Open the remote options window
+fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> Result<(), String> {
     // Snapshot options from state (app identity + instance UUID + everything injected)
     let options = {
         let state = app.state::<AppState>();
@@ -537,6 +630,16 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
     // Must happen before the webview loads, so the page's first IPC call is allowed.
     grant_remote_options_permissions(app, &url);
 
+    // Reuse the existing options window if it is already managed (hidden or visible).
+    // This avoids the wry/macOS webview leak caused by destroying and recreating.
+    if let Some(window) = app.get_webview_window(OPTIONS_LABEL) {
+        let window = window.clone();
+        let _ = window.navigate(url);
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
     let options_title = format!("{} Options", options.app_name);
     let window = WebviewWindowBuilder::new(app, OPTIONS_LABEL, WebviewUrl::External(url))
         .title(&options_title)
@@ -549,6 +652,16 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
         .map_err(|e| format!("Failed to create options window: {}", e))?;
 
     let _ = window.show();
+
+    // Take over the window's own close button so we park (hide + blank) instead
+    // of destroying the webview. Destroying leaks the underlying WKWebView process.
+    let close_window = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            park_webview_window(&close_window);
+        }
+    });
 
     Ok(())
 }
@@ -577,13 +690,13 @@ async fn open_options(app: AppHandle) -> Result<(), String> {
 /// commands aren't ACL-gated, so this works on any fork without widening what a
 /// remote page is allowed to do.
 ///
-/// A no-op when the window is already gone. `close()` rather than `destroy()`:
-/// same path the window's own close button takes.
+/// A no-op when the window is already gone. Parks (hides + blanks) the options
+/// window so it can be reused instead of leaking a webview process.
 #[tauri::command]
 async fn close_options<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(OPTIONS_LABEL) {
         app.run_on_main_thread(move || {
-            let _ = window.close();
+            park_webview_window(&window);
         })
         .map_err(|e| format!("Failed to close options window: {}", e))?;
     }
@@ -598,17 +711,15 @@ fn get_options(state: tauri::State<AppState>) -> Result<AppOptions, String> {
     Ok(options.clone())
 }
 
-/// Command to create a preview window with navigator.id injected via initialization_script.
-/// Must be created from Rust because the JS WebviewWindow API does not expose initializationScript.
+/// Command to create or reuse the preview window. The label argument is kept for
+/// backward compatibility with existing callers but is ignored: only one
+/// preview webview is ever created and it is reused (parked when not visible).
 #[tauri::command]
 async fn create_preview_window<R: Runtime>(
     app: AppHandle<R>,
     url: String,
-    label: String,
+    _label: String,
 ) -> Result<(), String> {
-    if app.get_webview_window(&label).is_some() {
-        return Ok(());
-    }
     let options = {
         let state = app.state::<AppState>();
         let guard = state.options.lock().unwrap();
@@ -617,7 +728,17 @@ async fn create_preview_window<R: Runtime>(
     let parsed_url: url::Url = url
         .parse()
         .map_err(|e| format!("Invalid preview URL '{}': {}", url, e))?;
-    let window = WebviewWindowBuilder::new(&app, label.clone(), WebviewUrl::External(parsed_url))
+
+    // Reuse the single preview window if it already exists (hidden or visible).
+    if let Some(window) = app.get_webview_window(PREVIEW_LABEL) {
+        let window = window.clone();
+        let _ = window.navigate(parsed_url);
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(&app, PREVIEW_LABEL, WebviewUrl::External(parsed_url))
         .title("Screensaver Preview")
         .inner_size(800.0, 600.0)
         .resizable(true)
@@ -632,38 +753,15 @@ async fn create_preview_window<R: Runtime>(
         .build()
         .map_err(|e| format!("Failed to create preview window: {}", e))?;
 
-    // Destroying a webview does not stop media that is already playing: buffered
-    // audio keeps going in background WebKit/WebView2 processes. That's why
-    // close_all_savers mutes and stops each saver webview and only closes it after
-    // a drain delay — a preview plays the same content and needs the same
-    // treatment. Without this, closing the preview with the window's own close
-    // button leaves audio/video running (the main window's JS preview wrapper
-    // does its own teardown, so only previews opened straight from a remote
-    // options page were affected).
-    let preview = window.clone();
+    // Park (hide + blank) instead of destroying on close, so the same webview
+    // can be reused. Destroying leaks the underlying webview process on macOS.
     let close_app = app.clone();
-    let close_label = label.clone();
+    let close_window = window.clone();
     window.on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-            // Take over the close so teardown isn't racing window destruction.
             api.prevent_close();
-
-            let preview = preview.clone();
-            let app = close_app.clone();
-            let label = close_label.clone();
-            tauri::async_runtime::spawn(async move {
-                autoplay_media::stop_webview(&preview);
-                // Let the WebKit pipeline and CoreAudio drain, as close_all_savers does.
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                let app_handle = app.clone();
-                // destroy(), not close(): close() emits CloseRequested again and
-                // would re-enter this handler.
-                let _ = app.run_on_main_thread(move || {
-                    if let Some(window) = app_handle.get_webview_window(&label) {
-                        let _ = window.destroy();
-                    }
-                });
-            });
+            park_webview_window(&close_window);
+            let _ = close_app.emit("preview-closed", ());
         }
     });
 
@@ -967,6 +1065,33 @@ fn navigate_webview(app: AppHandle, label: String, url: String) -> Result<(), St
     }
 }
 
+/// Command to stop media/loading in a webview (used before parking a window).
+#[tauri::command]
+fn stop_webview(app: AppHandle, label: String) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(&label) {
+        autoplay_media::stop_webview(&window);
+        Ok(())
+    } else {
+        Err(format!("Window '{}' not found", label))
+    }
+}
+
+/// Command to park a webview window (stop media, navigate about:blank, hide).
+/// Used by the frontend so it can hide the reusable preview/options windows
+/// without going through the core window API permissions.
+#[tauri::command]
+fn park_webview_window_command(app: AppHandle, label: String) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(&label) {
+        park_webview_window(&window);
+        if label == PREVIEW_LABEL {
+            let _ = app.emit("preview-closed", ());
+        }
+        Ok(())
+    } else {
+        Err(format!("Window '{}' not found", label))
+    }
+}
+
 /// Command to evaluate JavaScript in a webview
 #[tauri::command]
 fn evaluate_javascript(app: AppHandle, label: String, script: String) -> Result<String, String> {
@@ -1059,6 +1184,8 @@ pub fn run() {
             close_options,
             preview_screensaver,
             navigate_webview,
+            stop_webview,
+            park_webview_window_command,
             add_active_saver,
             clear_active_savers,
             get_active_savers,

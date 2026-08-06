@@ -410,6 +410,9 @@ impl ScreensaverEngine {
                 let label_clone = label.clone();
                 let _ = app_fs.run_on_main_thread(move || {
                     if let Some(window) = app_handle.get_webview_window(&label_clone) {
+                        let _ = window.set_always_on_top(true);
+                        #[cfg(target_os = "macos")]
+                        super::restore_macos_window(&window);
                         match window.set_fullscreen(true) {
                             Ok(_) => println!("Set fullscreen for window {}", label_clone),
                             Err(e) => println!(
@@ -471,13 +474,45 @@ impl ScreensaverEngine {
         monitor: &super::display_manager::MonitorInfo,
     ) -> Result<(), String> {
         let label = format!("saver-display-{}", monitor.id);
+        let url = self.get_saver_url(app)?;
 
-        if app.get_webview_window(&label).is_some() {
-            println!("Window {} already exists, skipping", label);
+        // Reuse an existing parked saver window for this display instead of
+        // creating a new webview every activation. Creating/destroying leaks
+        // the underlying WKWebView/WebView2 process on macOS.
+        if let Some(window) = app.get_webview_window(&label) {
+            println!("Reusing parked saver window {}", label);
+            let window = window.clone();
+            let saver_url: url::Url = url
+                .parse()
+                .map_err(|e| format!("Invalid saver URL '{}': {}", url, e))?;
+            let _ = window.navigate(saver_url);
+
+            let scale = monitor.scale_factor;
+            let logical_x = monitor.position.x as f64 / scale;
+            let logical_y = monitor.position.y as f64 / scale;
+            let logical_width = monitor.size.width as f64 / scale;
+            let logical_height = monitor.size.height as f64 / scale;
+            let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+                logical_x, logical_y,
+            )));
+            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
+                logical_width,
+                logical_height,
+            )));
+
+            let _ = window.show();
+            #[cfg(target_os = "macos")]
+            super::restore_macos_window(&window);
+
+            // Re-apply fullscreen after showing; hiding may have exited it.
+            let _ = window.set_fullscreen(true);
+            let _ = window.set_always_on_top(true);
+
+            let state = app.state::<super::AppState>();
+            state.active_savers.lock().unwrap().push(label.clone());
             return Ok(());
         }
 
-        let url = self.get_saver_url(app)?;
         let options = {
             let state = app.state::<super::AppState>();
             let guard = state.options.lock().unwrap();
@@ -548,6 +583,9 @@ impl ScreensaverEngine {
             Err(e) => println!("Warning: Failed to show window {}: {}", label, e),
         }
 
+        #[cfg(target_os = "macos")]
+        super::restore_macos_window(&window);
+
         let state = app.state::<super::AppState>();
         state.active_savers.lock().unwrap().push(label.clone());
 
@@ -559,39 +597,46 @@ impl ScreensaverEngine {
         let state = app.state::<super::AppState>();
         let savers = state.active_savers.lock().unwrap().clone();
 
-        println!("Closing {} saver windows", savers.len());
+        println!("Parking {} saver windows", savers.len());
 
-        // Phase 1: Hide + stop all windows synchronously
-        for label in savers.clone() {
-            if let Some(window) = app.get_webview_window(&label) {
-                match window.hide() {
-                    Ok(_) => println!("Hid window {}", label),
-                    Err(e) => println!("Failed to hide window {}: {}", label, e),
-                }
-                super::autoplay_media::stop_webview(&window);
-            }
-        }
-
-        // Phase 2: Close after delay to allow WebKit pipeline and CoreAudio to drain
-        let app_for_close = app.clone();
-        let close_labels = savers.clone();
+        // Park (hide + stop + blank) the saver windows instead of destroying them.
+        // Destroying leaks the underlying WKWebView/WebView2 process on macOS; by
+        // reusing the same windows across activations the leak stops.
+        //
+        // On macOS a native-fullscreen window cannot be reliably hidden until it
+        // exits fullscreen, so we leave fullscreen first, wait for the transition
+        // to settle, then park. Hiding immediately after set_fullscreen(false)
+        // races the animation and leaves a black fullscreen view.
+        let app_clone = app.clone();
         tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            let app_handle = app_for_close.clone();
-            let _ = app_for_close.run_on_main_thread(move || {
-                for label in close_labels {
-                    if let Some(w) = app_handle.get_webview_window(&label) {
-                        match w.close() {
-                            Ok(_) => println!("Closed window {}", label),
-                            Err(e) => println!("Failed to close window {}: {}", label, e),
-                        }
+            for label in &savers {
+                if let Some(window) = app_clone.get_webview_window(label) {
+                    if let Err(e) = window.set_fullscreen(false) {
+                        println!("Warning: Failed to exit fullscreen for {}: {}", label, e);
                     }
                 }
+            }
+
+            // Give macOS (and WebView2) time to exit native fullscreen before
+            // hiding the windows. 800 ms is enough for the fullscreen-space
+            // animation to settle without being noticeable to the user.
+            tokio::time::sleep(Duration::from_millis(800)).await;
+
+            let app_inner = app_clone.clone();
+            let labels = savers.clone();
+            let _ = app_clone.run_on_main_thread(move || {
+                for label in &labels {
+                    if let Some(window) = app_inner.get_webview_window(label) {
+                        super::park_webview_window(&window);
+                    }
+                }
+                println!("All saver windows parked");
             });
+
+            let state = app_clone.state::<super::AppState>();
+            state.active_savers.lock().unwrap().clear();
         });
 
-        state.active_savers.lock().unwrap().clear();
-        println!("All saver windows queued for close");
         Ok(())
     }
 

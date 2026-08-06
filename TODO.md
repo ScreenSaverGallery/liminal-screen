@@ -19,3 +19,5 @@
 - [x] implement custom app name and description
 - [x] remote options not loading (main index.html fallback)
 - [x] run on battery -> if false, no saver window, but display off should still fire
+- [ ] check for update periodically + notify user (nofitication / icon / navigator attribute)
+- [x] bug: kill preview, options and saver windows with close (activity monitor shows all of them persist after closing and multiply after each run -> consume a lot memory after some time)  (memory leak probably)
