@@ -107,6 +107,94 @@ pub fn build_saver_url(
     Ok(url.to_string())
 }
 
+/// Record a saver window as active, ignoring a label that is already registered.
+/// Reused windows would otherwise accumulate duplicates across activations.
+fn register_active_saver<R: tauri::Runtime>(app: &AppHandle<R>, label: &str) {
+    let state = app.state::<super::AppState>();
+    let mut active = state.active_savers.lock().unwrap();
+    if !active.iter().any(|l| l == label) {
+        active.push(label.to_string());
+    }
+}
+
+/// Report where a saver window actually landed and whether the compositor
+/// considers it visible. `show()` returning `Ok` only means the request was
+/// dispatched, so this is the check that distinguishes "never shown" from "shown
+/// somewhere we can't see" when a saver appears to be missing.
+fn log_saver_geometry<R: tauri::Runtime>(
+    window: &tauri::webview::WebviewWindow<R>,
+    monitor: &super::display_manager::MonitorInfo,
+) {
+    println!(
+        "Saver {}: visible={:?} fullscreen={:?} pos={:?} size={:?} (monitor wants {},{} {}x{} physical, scale {})",
+        window.label(),
+        window.is_visible(),
+        window.is_fullscreen(),
+        window.outer_position(),
+        window.outer_size(),
+        monitor.position.x,
+        monitor.position.y,
+        monitor.size.width,
+        monitor.size.height,
+        monitor.scale_factor,
+    );
+}
+
+/// Make a shown saver window cover everything on its display.
+///
+/// On macOS this raises the window above the menu bar and Dock instead of using
+/// native fullscreen, so it can be hidden and reshown instantly. Elsewhere the
+/// window is only marked always-on-top here; fullscreen is applied separately by
+/// `enter_saver_fullscreen`.
+#[cfg(target_os = "macos")]
+fn apply_saver_presentation<R: tauri::Runtime>(window: &tauri::webview::WebviewWindow<R>) {
+    super::apply_saver_window_level(window);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apply_saver_presentation<R: tauri::Runtime>(window: &tauri::webview::WebviewWindow<R>) {
+    if let Err(e) = window.set_always_on_top(true) {
+        println!(
+            "Warning: Failed to set always-on-top for {}: {}",
+            window.label(),
+            e
+        );
+    }
+}
+
+/// Put the saver windows into native fullscreen. macOS does not need this — the
+/// windows already sit above the menu bar and Dock at the screen-saver level, and
+/// avoiding native fullscreen is what keeps parking and reuse reliable there.
+#[cfg(target_os = "macos")]
+fn enter_saver_fullscreen<R: tauri::Runtime>(_app: &AppHandle<R>, _labels: Vec<String>) {}
+
+#[cfg(not(target_os = "macos"))]
+fn enter_saver_fullscreen<R: tauri::Runtime>(app: &AppHandle<R>, labels: Vec<String>) {
+    // Staggered: some window managers handle only one fullscreen transition at a
+    // time and drop the rest.
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        for (i, label) in labels.iter().enumerate() {
+            if i > 0 {
+                tokio::time::sleep(Duration::from_millis(600)).await;
+            }
+            let app_handle = app.clone();
+            let label = label.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Some(window) = app_handle.get_webview_window(&label) {
+                    match window.set_fullscreen(true) {
+                        Ok(_) => println!("Set fullscreen for window {}", label),
+                        Err(e) => println!(
+                            "Warning: Failed to set fullscreen for window {}: {}",
+                            label, e
+                        ),
+                    }
+                }
+            });
+        }
+    });
+}
+
 #[derive(Clone)]
 pub struct ScreensaverEngine {
     is_monitoring: Arc<AtomicBool>,
@@ -241,14 +329,30 @@ impl ScreensaverEngine {
             return Ok(());
         }
 
-        match compute_next_action(
+        let next = compute_next_action(
             idle_time,
             starts_in_seconds,
             display_off_seconds,
             require_pass_seconds,
             saver_allowed,
             self.get_state(),
-        ) {
+        );
+        if let Some(action) = next {
+            // Which threshold fired, so a transition that looks spurious can be
+            // traced back to the idle reading that caused it.
+            println!(
+                "Transition {:?} → {:?} at idle {}s (starts {}s, displayOff {}s, requirePass {}s, saverAllowed {})",
+                self.get_state(),
+                action,
+                idle_time,
+                starts_in_seconds,
+                display_off_seconds,
+                require_pass_seconds,
+                saver_allowed,
+            );
+        }
+
+        match next {
             Some(ScreensaverState::Locked) => self.request_lock(app),
             Some(ScreensaverState::DisplayOff) => self.request_display_off(app),
             Some(ScreensaverState::ScreensaverActive) => self.request_activate(app),
@@ -395,32 +499,11 @@ impl ScreensaverEngine {
             self.create_saver_window(app, monitor)?;
         }
 
-        // Stagger fullscreen transitions — macOS allows only one at a time
-        let app_fs = app.clone();
         let window_labels: Vec<String> = monitors
             .iter()
             .map(|m| format!("saver-display-{}", m.id))
             .collect();
-        tauri::async_runtime::spawn(async move {
-            for (i, label) in window_labels.iter().enumerate() {
-                if i > 0 {
-                    tokio::time::sleep(Duration::from_millis(600)).await;
-                }
-                let app_handle = app_fs.clone();
-                let label_clone = label.clone();
-                let _ = app_fs.run_on_main_thread(move || {
-                    if let Some(window) = app_handle.get_webview_window(&label_clone) {
-                        match window.set_fullscreen(true) {
-                            Ok(_) => println!("Set fullscreen for window {}", label_clone),
-                            Err(e) => println!(
-                                "Warning: Failed to set fullscreen for window {}: {}",
-                                label_clone, e
-                            ),
-                        }
-                    }
-                });
-            }
-        });
+        enter_saver_fullscreen(app, window_labels);
 
         self.set_state(ScreensaverState::ScreensaverActive);
         let _ = app.emit("screensaver-started", ());
@@ -471,13 +554,40 @@ impl ScreensaverEngine {
         monitor: &super::display_manager::MonitorInfo,
     ) -> Result<(), String> {
         let label = format!("saver-display-{}", monitor.id);
+        let url = self.get_saver_url(app)?;
 
-        if app.get_webview_window(&label).is_some() {
-            println!("Window {} already exists, skipping", label);
+        // Reuse the parked saver window for this display instead of creating a
+        // new webview every activation — see `super::park_webview_window`.
+        if let Some(window) = app.get_webview_window(&label) {
+            println!("Reusing parked saver window {}", label);
+            let saver_url: url::Url = url
+                .parse()
+                .map_err(|e| format!("Invalid saver URL '{}': {}", url, e))?;
+            let _ = window.navigate(saver_url);
+
+            // The display may have moved or been resized since the last run.
+            let scale = monitor.scale_factor;
+            let logical_x = monitor.position.x as f64 / scale;
+            let logical_y = monitor.position.y as f64 / scale;
+            let logical_width = monitor.size.width as f64 / scale;
+            let logical_height = monitor.size.height as f64 / scale;
+            let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+                logical_x, logical_y,
+            )));
+            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
+                logical_width,
+                logical_height,
+            )));
+
+            super::bump_window_epoch(&window);
+            let _ = window.show();
+            apply_saver_presentation(&window);
+            log_saver_geometry(&window, monitor);
+
+            register_active_saver(app, &label);
             return Ok(());
         }
 
-        let url = self.get_saver_url(app)?;
         let options = {
             let state = app.state::<super::AppState>();
             let guard = state.options.lock().unwrap();
@@ -505,6 +615,13 @@ impl ScreensaverEngine {
         .skip_taskbar(true)
         .visible(false)
         .focused(true)
+        // Window layer on every platform, plus the webview's
+        // `underPageBackgroundColor` on macOS 12+; both otherwise default to
+        // white. This does NOT fix the macOS screen-edge hairline (see README) —
+        // the webview covers the window exactly, so the window colour is never
+        // visible there. It does avoid a white flash between the window being
+        // shown and the page's first paint.
+        .background_color(tauri::webview::Color(0, 0, 0, 255))
         .initialization_script(super::build_init_script(&options))
         // speechSynthesis fallback for WebKitGTK (no-op where the native API exists)
         .initialization_script(super::speech::POLYFILL_JS);
@@ -548,50 +665,37 @@ impl ScreensaverEngine {
             Err(e) => println!("Warning: Failed to show window {}: {}", label, e),
         }
 
-        let state = app.state::<super::AppState>();
-        state.active_savers.lock().unwrap().push(label.clone());
+        apply_saver_presentation(&window);
+        log_saver_geometry(&window, monitor);
+        register_active_saver(app, &label);
 
         println!("Successfully created saver window: {}", label);
         Ok(())
     }
 
+    /// Park every active saver window. MUST be called on the main thread.
+    ///
+    /// Parks rather than closes: destroying a webview leaks it (see
+    /// `super::park_webview_window`), so the windows are kept and reused.
     fn close_all_savers<R: tauri::Runtime>(&self, app: &AppHandle<R>) -> Result<(), String> {
-        let state = app.state::<super::AppState>();
-        let savers = state.active_savers.lock().unwrap().clone();
+        // Take the list rather than cloning it: the registration must be dropped
+        // in the same critical section that reads it, or an activation landing
+        // between the two would have its labels wiped and leave a saver window
+        // on screen that nothing is tracking.
+        let savers = {
+            let state = app.state::<super::AppState>();
+            let mut active = state.active_savers.lock().unwrap();
+            std::mem::take(&mut *active)
+        };
 
-        println!("Closing {} saver windows", savers.len());
+        println!("Parking {} saver windows", savers.len());
 
-        // Phase 1: Hide + stop all windows synchronously
-        for label in savers.clone() {
-            if let Some(window) = app.get_webview_window(&label) {
-                match window.hide() {
-                    Ok(_) => println!("Hid window {}", label),
-                    Err(e) => println!("Failed to hide window {}: {}", label, e),
-                }
-                super::autoplay_media::stop_webview(&window);
+        for label in &savers {
+            if let Some(window) = app.get_webview_window(label) {
+                super::park_webview_window(&window);
             }
         }
 
-        // Phase 2: Close after delay to allow WebKit pipeline and CoreAudio to drain
-        let app_for_close = app.clone();
-        let close_labels = savers.clone();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            let app_handle = app_for_close.clone();
-            let _ = app_for_close.run_on_main_thread(move || {
-                for label in close_labels {
-                    if let Some(w) = app_handle.get_webview_window(&label) {
-                        match w.close() {
-                            Ok(_) => println!("Closed window {}", label),
-                            Err(e) => println!("Failed to close window {}: {}", label, e),
-                        }
-                    }
-                }
-            });
-        });
-
-        state.active_savers.lock().unwrap().clear();
-        println!("All saver windows queued for close");
         Ok(())
     }
 
@@ -605,7 +709,10 @@ impl ScreensaverEngine {
             options.saver_url.clone()
         };
 
-        build_saver_url(&base_url, &options.custom_options)
+        let url = build_saver_url(&base_url, &options.custom_options)?;
+        // Carry the live options so a reused saver window doesn't report the
+        // snapshot baked into its init script at creation.
+        super::inject_options_payload(&url, &options)
     }
 
     pub fn get_status(&self) -> ScreensaverStatus {

@@ -217,8 +217,8 @@ Minimal, reactive UI — no framework. Uses a lightweight `Signal` class for sta
 The Rust backend is the engine — it handles all screensaver lifecycle, window management, power monitoring, and persistence.
 
 - `main.rs` — App entry, Tauri plugin registration (store, dialog, opener)
-- `lib.rs` — Core setup: window creation, system tray with dynamic tooltip (from `VITE_APP_NAME`), options CRUD, screensaver engine orchestration, `factory_reset_options` command, `build_init_script` (injects `navigator.id`, a `LiminalScreen/{version} ({appName})` suffix on `navigator.userAgent`/`navigator.appVersion`, and the frozen `navigator.liminalScreen` options snapshot into all remote windows at document-start)
-- `screensaver_engine.rs` — Screensaver state machine: monitors idle time, creates/destroys fullscreen windows on activation/deactivation, manages multi-display layout
+- `lib.rs` — Core setup: window creation, system tray with dynamic tooltip (from `VITE_APP_NAME`), options CRUD, screensaver engine orchestration, `factory_reset_options` command, `build_init_script` (injects `navigator.id`, a `LiminalScreen/{version} ({appName})` suffix on `navigator.userAgent`/`navigator.appVersion`, and the frozen `navigator.liminalScreen` options object into all remote windows at document-start), and `park_webview_window` (window pooling — see below)
+- `screensaver_engine.rs` — Screensaver state machine: monitors idle time, shows/parks fullscreen windows on activation/deactivation, manages multi-display layout
 - `display_manager.rs` — Monitor detection and logical coordinate calculation for multi-monitor fullscreen positioning
 - `power_monitor.rs` — Platform-specific idle time detection (macOS IOKit, Windows `GetLastInputInfo`, Linux systemd-inhibit + X11 screensaver queries)
 - `autoplay_media.rs` — Per-window autoplay permission configuration for WKWebView (macOS) and WebView2 (Windows)
@@ -254,17 +254,44 @@ Reusable SDK for fork developers who host their own remote options page, publish
 
 ## Technical Details
 
+### Window Pooling
+
+Webviews are never destroyed. wry deliberately over-retains the `WKWebView` on drop (`Drop for InnerWebView` calls `webview.retain()` to avoid a use-after-free), so a destroyed webview and its WebKit helper processes are never released — every create/destroy cycle leaked another set, and memory climbed with each activation.
+
+So each window that can open more than once — one saver per display, plus preview and options — is created at most once and then **parked** instead of closed: media stopped, navigated to `about:blank`, hidden. The next activation re-navigates and re-shows the same webview. Baseline memory is a fixed cost rather than a leak; the helper processes stay in Activity Monitor, but their count no longer grows.
+
+Because a pooled webview keeps the `initialization_script` it was built with — and there is no way to replace that on a live webview — the options snapshot baked in at creation would go stale as soon as the user saved a setting. Each navigation therefore carries the current options in the URL fragment (`#__liminal=…`), which the init script prefers over the baked snapshot and strips (restoring any fragment the URL already had) before the page's own scripts run. The fragment is used rather than a query parameter because fragments are not sent to the server.
+
 ### Multi-Monitor Fullscreen
 
-macOS only allows one fullscreen transition at a time. The app staggers fullscreen calls with 600ms delays to ensure all monitors are covered properly.
+On macOS the saver windows are **not** put into native fullscreen. Native fullscreen gives each window its own Space, which costs an animation each way, permits only one transition at a time, and leaves `hide()` unreliable until it settles — all of which fight window pooling. Instead the saver covers the screen as an overlay, which needs three things together. Each was confirmed necessary by bisection; none substitutes for another:
+
+1. **Accessory activation policy** (`setup_app`). This is the load-bearing one. A Regular (Dock-visible) app is a full participant in activation, so showing a window is an *activation request* — and macOS answers that from inside another app's full-screen Space by switching Spaces or refusing, neither of which puts a saver on screen. Accessory apps float over the active Space instead of competing for it. The cost is no Dock icon and no Cmd-Tab entry, which suits a tray app. `orderFrontRegardless` is **not** a substitute (verified), and is deliberately not used: the plain `show()` leaves the window key, so dismissing keystrokes are swallowed rather than delivered to whatever is underneath.
+2. **`canJoinAllSpaces | fullScreenAuxiliary`** collection behavior. `fullScreenAuxiliary` is load-bearing — without it the saver is confined to the desktop Space. Do **not** use `fullScreenNone`: it is the adjacent bit with the opposite meaning (opt out of full-screen entirely), and it produces a saver that runs, plays audio, and reports itself visible with correct bounds while being invisible from inside any full-screen app.
+3. **`NSScreenSaverWindowLevel`** (1000) for the window level. Note that a level only orders windows *within* a Space — it does nothing to get the saver into a full-screen Space, which is entirely the job of (1) and (2). Once the saver is in that Space, the full-screen app's own window is at `NSNormalWindowLevel` (0), so 1000 is already far above it. Resist going higher: `CGShieldingWindowLevel()` (2147483628 on macOS 26) also outranks `kCGAssistiveTechHighWindowLevel` (1500) and would occlude VoiceOver, Switch Control and Zoom.
+
+`LIMINAL_SAVER_LEVEL` and `LIMINAL_SAVER_BEHAVIOR` override the last two at runtime (decimal or `0x` hex) for diagnosing display problems without a rebuild. Every activation logs a `SAVER CONFIG …` line with the values actually in effect, including the real `[NSApp activationPolicy]`.
+
+Other platforms still use native fullscreen, staggered by 600 ms, since some window managers handle only one transition at a time.
+
+### Screen-edge hairline (macOS, known)
+
+A ~1px light line can appear at the very edge of the saver on macOS. It is **not** a geometry bug — the window covers the screen exactly and the webview covers the window exactly (the `macOS … frames:` log line reports all three rects; when they match, geometry is ruled out). It is WebKit's opaque white base layer showing through wherever the page doesn't paint the last device pixel.
+
+There are two ways to remove it, and only one of them is acceptable here:
+
+- **Fix it in the saver page (recommended).** Give `html, body` an opaque background — `html, body { margin: 0; background: #000; }`. The white base is only visible where nothing is painted over it, so an opaque page background hides it regardless of whether the page's *content* reaches the edge. This is the real fix and it costs nothing.
+- **Enable `macos-private-api` (rejected).** That switches on `wry/transparent`, which turns off the base layer via a private `drawsBackground` KVC key. It works, but it is a private API and therefore a blocker for publishing, so this project deliberately does not enable it. Don't add it to the `tauri` features.
+
+Note that the window's `background_color` cannot fix this: the webview covers 100% of the window, so the window colour is never visible at the edge. It is set anyway to avoid a white flash before the page's first paint.
 
 ### Audio Playback
 
 The app uses a layered approach to stop audio cleanly:
 1. JavaScript mute + pause (stops media elements)
 2. Platform-native `stopLoading` (kills WebKit pipeline)
-3. 500ms delay (CoreAudio drains)
-4. Window close (destroys webview)
+3. Navigation to `about:blank` (tears down the page and its media)
+4. Window hidden and kept for reuse (see Window Pooling)
 
 ### Autoplay Configuration
 

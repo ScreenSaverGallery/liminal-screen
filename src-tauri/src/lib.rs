@@ -31,6 +31,8 @@ fn init_env() {
     }
 }
 
+/// Preview window label (singleton, reused across previews)
+const PREVIEW_LABEL: &str = "preview";
 /// Options window label
 const OPTIONS_LABEL: &str = "options";
 /// Main window label
@@ -118,6 +120,11 @@ fn load_persisted_options<R: Runtime>(
 pub struct AppState {
     pub active_savers: std::sync::Mutex<Vec<String>>,
     pub options: std::sync::Mutex<AppOptions>,
+    /// Bumped every time a pooled window is parked or shown, keyed by label.
+    /// A deferred park can compare the epoch it captured against the current
+    /// one to tell whether the window has been reused since (see
+    /// `park_webview_window`).
+    pub window_epochs: std::sync::Mutex<std::collections::HashMap<String, u64>>,
 }
 
 /// Application options
@@ -242,10 +249,24 @@ fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::err
         options.autostart = autolaunch.is_enabled().unwrap_or(false);
     }
 
+    // Accessory activation policy is required for the saver to appear over
+    // another app's full-screen Space, which is where most users are most of the
+    // time. A Regular (Dock-visible) app is a full participant in activation, so
+    // showing a window is an activation request — and macOS answers that from
+    // inside someone else's full-screen Space by switching Spaces or refusing,
+    // neither of which puts a saver on screen. Accessory apps float over the
+    // active Space instead of competing for it, which is how menu-bar utilities
+    // work; this app already lives in the tray, so it loses nothing but the Dock
+    // icon. Verified by bisection: nothing else (window level, collection
+    // behavior, orderFrontRegardless) substitutes for it.
+    #[cfg(target_os = "macos")]
+    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
     // Initialize app state with loaded options
     let app_state = AppState {
         active_savers: std::sync::Mutex::new(Vec::new()),
         options: std::sync::Mutex::new(options),
+        window_epochs: std::sync::Mutex::new(std::collections::HashMap::new()),
     };
     app.manage(app_state);
 
@@ -415,12 +436,61 @@ fn open_options_or_fallback<R: Runtime>(app: &AppHandle<R>) -> Result<(), String
     }
 }
 
+/// Fragment marker carrying the live options payload. See `inject_options_payload`.
+const OPTIONS_FRAGMENT_PREFIX: &str = "#__liminal=";
+
+/// Attach the current options to a URL as a fragment payload so that a pooled
+/// window reports fresh values on every navigation.
+///
+/// A webview keeps the `initialization_script` it was built with, and there is no
+/// way to replace that on a live webview. Since windows are now pooled rather
+/// than recreated (see `park_webview_window`), the snapshot baked in at creation
+/// would otherwise be what `navigator.liminalScreen` reports for the rest of the
+/// session — stale the moment the user saves an option. The init script re-reads
+/// this payload on every navigation instead, and strips it before the page's own
+/// scripts run.
+///
+/// The fragment is used rather than a query parameter because fragments are not
+/// sent to the server: the payload carries the instance UUID and every setting,
+/// which the page itself is already trusted with but the saver's host is not.
+///
+/// Any fragment the URL already had is carried inside the payload and restored
+/// when the init script strips ours, so a page's own hash routing is unaffected.
+pub fn inject_options_payload(url: &str, options: &AppOptions) -> Result<String, String> {
+    let mut parsed: url::Url = url
+        .parse()
+        .map_err(|e| format!("Invalid URL '{}': {}", url, e))?;
+
+    let payload = serde_json::json!({ "o": options, "f": parsed.fragment() });
+    let json = serde_json::to_string(&payload)
+        .map_err(|e| format!("Failed to serialize options payload: {}", e))?;
+
+    // Encode to `[A-Za-z0-9%]` only: the result has to survive as a URL fragment
+    // and be readable with `decodeURIComponent`, and option values can contain
+    // anything — including the `&` and `=` that would otherwise split the payload.
+    let encoded =
+        percent_encoding::utf8_percent_encode(&json, percent_encoding::NON_ALPHANUMERIC).to_string();
+
+    // `Url::set_fragment` does not escape `%`, so the encoding above is preserved.
+    parsed.set_fragment(Some(&format!(
+        "{}{}",
+        OPTIONS_FRAGMENT_PREFIX.trim_start_matches('#'),
+        encoded
+    )));
+    Ok(parsed.to_string())
+}
+
 /// Build the initialization script injected at document-start into every remote window.
 /// Sets navigator.id to the instance UUID, appends the app identifier
 /// (`LiminalScreen/{version} ({app_name})`) to navigator.userAgent and navigator.appVersion,
 /// and exposes the full options snapshot (plus the native `version`) as the frozen
 /// navigator.liminalScreen object. Options are embedded as a JSON object literal, so
 /// serde handles all string escaping.
+///
+/// The embedded snapshot is only the fallback: when the URL carries a fragment
+/// payload (`inject_options_payload`) the script prefers it, which is what keeps
+/// a pooled window's options current. Subframes have no payload of their own and
+/// so continue to see the snapshot.
 fn build_init_script(options: &AppOptions) -> String {
     let version = env!("CARGO_PKG_VERSION");
     let json = serde_json::to_string(options).unwrap_or_else(|_| "{}".to_string());
@@ -431,6 +501,14 @@ fn build_init_script(options: &AppOptions) -> String {
     format!(
         "(function(){{\
             var o={json};\
+            var P='{prefix}';\
+            if(location.hash.indexOf(P)===0){{\
+                try{{\
+                    var d=JSON.parse(decodeURIComponent(location.hash.slice(P.length)));\
+                    if(d&&d.o)o=d.o;\
+                    try{{history.replaceState(null,'',location.href.split('#')[0]+(d&&d.f?'#'+d.f:''));}}catch(e){{}}\
+                }}catch(e){{}}\
+            }}\
             o.version='{version}';\
             try{{Object.freeze(o.customOptions);}}catch(e){{}}\
             var ident=' LiminalScreen/{version} ('+o.appName+')';\
@@ -440,6 +518,7 @@ fn build_init_script(options: &AppOptions) -> String {
             try{{Object.defineProperty(navigator,'liminalScreen',{{value:Object.freeze(o),writable:false,configurable:false}});}}catch(e){{}}\
         }})()",
         json = json,
+        prefix = OPTIONS_FRAGMENT_PREFIX,
         version = version
     )
 }
@@ -506,15 +585,242 @@ fn grant_remote_options_permissions<R: Runtime>(app: &AppHandle<R>, url: &url::U
     });
 }
 
-/// Open the remote options window
-fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> Result<(), String> {
-    // Check if options window already exists
-    if let Some(window) = app.get_webview_window(OPTIONS_LABEL) {
-        let _ = window.show();
-        let _ = window.set_focus();
-        return Ok(());
+/// How long macOS needs to finish sliding a window out of its fullscreen Space.
+/// Only relevant for windows the user fullscreened by hand — saver windows cover
+/// the screen without native fullscreen (see `apply_saver_window_level`).
+const FULLSCREEN_EXIT_SETTLE_MS: u64 = 800;
+
+/// Bump and return a pooled window's epoch. Called on every park and on every
+/// show, so a deferred action can detect that the window was reused since.
+pub fn bump_window_epoch<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) -> u64 {
+    match window.app_handle().try_state::<AppState>() {
+        Some(state) => {
+            let mut epochs = state.window_epochs.lock().unwrap();
+            let epoch = epochs.entry(window.label().to_string()).or_insert(0);
+            *epoch += 1;
+            *epoch
+        }
+        None => 0,
+    }
+}
+
+fn window_epoch<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) -> u64 {
+    window
+        .app_handle()
+        .try_state::<AppState>()
+        .and_then(|state| {
+            state
+                .window_epochs
+                .lock()
+                .unwrap()
+                .get(window.label())
+                .copied()
+        })
+        .unwrap_or(0)
+}
+
+/// Park a webview window instead of destroying it: stop media, blank it, hide it.
+///
+/// wry deliberately over-retains the WKWebView on drop — `Drop for InnerWebView`
+/// calls `webview.retain()` and `manager.retain()` to avoid a use-after-free — so
+/// a destroyed webview is never released and its WebKit helper processes stay
+/// alive. Every create/destroy cycle adds another set, which is why memory used
+/// to climb with each activation. Nothing we do at teardown can fix that, so
+/// every window we open more than once is pooled instead: parked when closed,
+/// re-navigated and re-shown when needed again. Baseline memory is then a fixed
+/// cost (one webview per display, plus preview and options) rather than a leak.
+pub fn park_webview_window<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) {
+    autoplay_media::stop_webview(window);
+
+    // Blank first so a reused window never flashes the previous content.
+    if let Ok(url) = "about:blank".parse() {
+        if let Err(e) = window.navigate(url) {
+            println!("Warning: Failed to navigate window to about:blank: {}", e);
+        }
     }
 
+    let epoch = bump_window_epoch(window);
+
+    // macOS ignores `hide()` on a window that is still in its own fullscreen
+    // Space. Saver windows never use native fullscreen, but the preview and
+    // options windows are user-resizable and can be fullscreened by hand, so
+    // leave fullscreen and retry the hide once the transition has settled.
+    let was_fullscreen = window.is_fullscreen().unwrap_or(false);
+    if was_fullscreen {
+        if let Err(e) = window.set_fullscreen(false) {
+            println!("Warning: Failed to exit fullscreen before hide: {}", e);
+        }
+    }
+
+    if let Err(e) = window.hide() {
+        println!("Warning: Failed to hide parked window: {}", e);
+    }
+
+    if was_fullscreen {
+        let window = window.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(FULLSCREEN_EXIT_SETTLE_MS)).await;
+            // Skip if the window has been shown again in the meantime —
+            // otherwise this would hide a window the user just reopened.
+            if window_epoch(&window) == epoch {
+                let _ = window.hide();
+            }
+        });
+    }
+}
+
+/// Read an integer from the environment, accepting `0x`-prefixed hex.
+#[cfg(target_os = "macos")]
+fn env_num(name: &str) -> Option<isize> {
+    let raw = std::env::var(name).ok()?;
+    let raw = raw.trim();
+    let parsed = match raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
+        Some(hex) => isize::from_str_radix(hex, 16),
+        None => raw.parse(),
+    };
+    match parsed {
+        Ok(v) => {
+            println!("[env] {} = {} (0x{:x})", name, v, v);
+            Some(v)
+        }
+        Err(e) => {
+            println!("[env] Ignoring {}='{}': {}", name, raw, e);
+            None
+        }
+    }
+}
+
+/// macOS: make a saver window cover the screen without native fullscreen.
+///
+/// Native fullscreen puts each window in its own Space, which costs a ~0.5 s
+/// animation each way, permits only one transition at a time, and leaves `hide()`
+/// unreliable until the transition settles. Raising the window to the screen-saver
+/// level covers the menu bar and the Dock instead, and show/hide is immediate —
+/// which is what lets a parked saver be reused without any staggering or delays.
+#[cfg(target_os = "macos")]
+pub fn apply_saver_window_level<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyObject, Bool};
+    use objc2_foundation::NSRect;
+
+    // NSScreenSaverWindowLevel. Enough on its own: a level only orders windows
+    // *within* a Space, and once the collection behavior below lets the saver join
+    // another app's full-screen Space, that app's own window is at
+    // NSNormalWindowLevel (0). Going higher buys nothing and costs something —
+    // CGShieldingWindowLevel() (2147483628 on macOS 26) also outranks
+    // kCGAssistiveTechHighWindowLevel (1500), so it would occlude VoiceOver,
+    // Switch Control and Zoom, which should stay above a screensaver.
+    const NS_SCREEN_SAVER_WINDOW_LEVEL: isize = 1000;
+    // canJoinAllSpaces | fullScreenAuxiliary.
+    //
+    // fullScreenAuxiliary (1 << 8) is what allows the window to be shown on the
+    // same Space as a full-screen window — without it a saver is confined to the
+    // desktop Space and never appears over an app the user has fullscreened,
+    // which is most of the time for most people. Its opposite, fullScreenNone
+    // (1 << 9), is what a window uses to opt out of fullscreen entirely; setting
+    // that here is what made the saver invisible from inside a fullscreen app.
+    //
+    // Deliberately NOT stationary (1 << 4): documented as making a window behave
+    // "like the desktop window", which risks the wallpaper layer.
+    const COLLECTION_BEHAVIOR: usize = (1 << 0) | (1 << 8);
+
+    // Both overridable so a display problem can be bisected without a rebuild —
+    // e.g. LIMINAL_SAVER_LEVEL=3 for an ordinary floating window, or
+    // LIMINAL_SAVER_BEHAVIOR=0 for macOS defaults.
+    let level = env_num("LIMINAL_SAVER_LEVEL").unwrap_or(NS_SCREEN_SAVER_WINDOW_LEVEL);
+    let behavior = env_num("LIMINAL_SAVER_BEHAVIOR")
+        .map(|v| v as usize)
+        .unwrap_or(COLLECTION_BEHAVIOR);
+
+    let label = window.label().to_string();
+    if let Err(e) = window.with_webview(move |pw| unsafe {
+        let wkwebview = &*(pw.inner() as *mut AnyObject);
+        let ns_window: *mut AnyObject = msg_send![wkwebview, window];
+        if ns_window.is_null() {
+            println!("macOS saver level: NSWindow is null for {}", label);
+            return;
+        }
+        let _: () = msg_send![&*ns_window, setLevel: level];
+        let _: () = msg_send![&*ns_window, setCollectionBehavior: behavior];
+
+        // Geometry check: a saver that looks wrong at the screen edge is almost
+        // always one of these three rects disagreeing. When they match, the
+        // window covers the screen and the webview covers the window, so
+        // anything visible at the edge is being painted by the webview itself.
+        let win_frame: NSRect = msg_send![&*ns_window, frame];
+        let content_view: *mut AnyObject = msg_send![&*ns_window, contentView];
+        let content_bounds: NSRect = msg_send![&*content_view, bounds];
+        let wv_frame: NSRect = msg_send![wkwebview, frame];
+        println!(
+            "macOS {} frames: window={:?}+{:?} content={:?}+{:?} webview={:?}+{:?}",
+            label,
+            (win_frame.origin.x, win_frame.origin.y),
+            (win_frame.size.width, win_frame.size.height),
+            (content_bounds.origin.x, content_bounds.origin.y),
+            (content_bounds.size.width, content_bounds.size.height),
+            (wv_frame.origin.x, wv_frame.origin.y),
+            (wv_frame.size.width, wv_frame.size.height),
+        );
+
+        // Deliberately NOT orderFrontRegardless: under the Accessory policy the
+        // plain `show()` already puts the saver over the active Space, and it
+        // leaves the window key — so keystrokes that dismiss the saver are
+        // swallowed rather than delivered to whatever is underneath.
+        // NSApplicationActivationPolicy: 0 = Regular, 1 = Accessory, 2 = Prohibited.
+        let ns_app: *mut AnyObject = msg_send![objc2::class!(NSApplication), sharedApplication];
+        let policy: isize = msg_send![ns_app, activationPolicy];
+        println!(
+            "SAVER CONFIG {}: level={} behavior=0x{:x} activationPolicy={}",
+            label,
+            level,
+            behavior,
+            match policy {
+                0 => "Regular",
+                1 => "Accessory",
+                2 => "Prohibited",
+                _ => "unknown",
+            }
+        );
+
+        // Read the compositor's view of the window back. A window that reports
+        // visible with correct bounds but shows nothing is either fully
+        // transparent, occluded, or hosting a webview that isn't drawing — these
+        // tell which.
+        let level: isize = msg_send![&*ns_window, level];
+        let alpha: f64 = msg_send![&*ns_window, alphaValue];
+        let opaque: Bool = msg_send![&*ns_window, isOpaque];
+        let visible: Bool = msg_send![&*ns_window, isVisible];
+        let on_screen: usize = msg_send![&*ns_window, occlusionState];
+        let behavior: usize = msg_send![&*ns_window, collectionBehavior];
+        let wv_hidden: Bool = msg_send![wkwebview, isHidden];
+        let wv_alpha: f64 = msg_send![wkwebview, alphaValue];
+        let wv_superview: *mut AnyObject = msg_send![wkwebview, superview];
+        let content_view: *mut AnyObject = msg_send![&*ns_window, contentView];
+        println!(
+            "macOS {} NSWindow: level={} alpha={} opaque={} visible={} occlusion=0x{:x} behavior=0x{:x} | WKWebView: hidden={} alpha={} attached={} isContentView={}",
+            label,
+            level,
+            alpha,
+            opaque.as_bool(),
+            visible.as_bool(),
+            on_screen,
+            behavior,
+            wv_hidden.as_bool(),
+            wv_alpha,
+            !wv_superview.is_null(),
+            std::ptr::eq(wv_superview, content_view),
+        );
+    }) {
+        println!(
+            "Warning: could not raise {} to saver level: {}",
+            window.label(),
+            e
+        );
+    }
+}
+
+/// Open the remote options window
+fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> Result<(), String> {
     // Snapshot options from state (app identity + instance UUID + everything injected)
     let options = {
         let state = app.state::<AppState>();
@@ -535,7 +841,28 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
     }
 
     // Must happen before the webview loads, so the page's first IPC call is allowed.
+    // Uses the origin only, so it is unaffected by the payload fragment below.
     grant_remote_options_permissions(app, &url);
+
+    // Carry the live options, so a reused options window doesn't report the
+    // snapshot baked into its init script at creation.
+    let url: url::Url = inject_options_payload(url.as_str(), &options)?
+        .parse()
+        .map_err(|e| format!("Failed to parse options URL: {}", e))?;
+
+    // Reuse the pooled options window rather than building a second one — see
+    // `park_webview_window` for why webviews are never destroyed.
+    if let Some(window) = app.get_webview_window(OPTIONS_LABEL) {
+        // Only re-navigate a parked window. Reloading one that is already open
+        // would discard whatever the user had typed into the form.
+        if !window.is_visible().unwrap_or(false) {
+            let _ = window.navigate(url);
+        }
+        bump_window_epoch(&window);
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
 
     let options_title = format!("{} Options", options.app_name);
     let window = WebviewWindowBuilder::new(app, OPTIONS_LABEL, WebviewUrl::External(url))
@@ -549,6 +876,16 @@ fn open_options_window<R: Runtime>(app: &AppHandle<R>, options_url: String) -> R
         .map_err(|e| format!("Failed to create options window: {}", e))?;
 
     let _ = window.show();
+
+    // Take over the window's own close button so we park (hide + blank) instead
+    // of destroying the webview. Destroying leaks the underlying WKWebView process.
+    let close_window = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            park_webview_window(&close_window);
+        }
+    });
 
     Ok(())
 }
@@ -577,13 +914,13 @@ async fn open_options(app: AppHandle) -> Result<(), String> {
 /// commands aren't ACL-gated, so this works on any fork without widening what a
 /// remote page is allowed to do.
 ///
-/// A no-op when the window is already gone. `close()` rather than `destroy()`:
-/// same path the window's own close button takes.
+/// A no-op when the window is already gone. Parks (hides + blanks) the options
+/// window so it can be reused instead of leaking a webview process.
 #[tauri::command]
 async fn close_options<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(OPTIONS_LABEL) {
         app.run_on_main_thread(move || {
-            let _ = window.close();
+            park_webview_window(&window);
         })
         .map_err(|e| format!("Failed to close options window: {}", e))?;
     }
@@ -598,26 +935,34 @@ fn get_options(state: tauri::State<AppState>) -> Result<AppOptions, String> {
     Ok(options.clone())
 }
 
-/// Command to create a preview window with navigator.id injected via initialization_script.
-/// Must be created from Rust because the JS WebviewWindow API does not expose initializationScript.
+/// Command to create or reuse the preview window. Only one preview webview is
+/// ever created (label `PREVIEW_LABEL`); it is parked when closed and reused.
+/// Created from Rust because the JS `WebviewWindow` API cannot set
+/// `initialization_script`, which is how `navigator.id` gets injected.
 #[tauri::command]
-async fn create_preview_window<R: Runtime>(
-    app: AppHandle<R>,
-    url: String,
-    label: String,
-) -> Result<(), String> {
-    if app.get_webview_window(&label).is_some() {
-        return Ok(());
-    }
+async fn create_preview_window<R: Runtime>(app: AppHandle<R>, url: String) -> Result<(), String> {
     let options = {
         let state = app.state::<AppState>();
         let guard = state.options.lock().unwrap();
         guard.clone()
     };
-    let parsed_url: url::Url = url
+    // Carry the live options, so a reused preview window doesn't report the
+    // snapshot baked into its init script at creation.
+    let parsed_url: url::Url = inject_options_payload(&url, &options)?
         .parse()
         .map_err(|e| format!("Invalid preview URL '{}': {}", url, e))?;
-    let window = WebviewWindowBuilder::new(&app, label.clone(), WebviewUrl::External(parsed_url))
+
+    // Reuse the pooled preview window if it already exists. Unlike options, a
+    // preview always re-navigates: the point of it is to restart the saver.
+    if let Some(window) = app.get_webview_window(PREVIEW_LABEL) {
+        let _ = window.navigate(parsed_url);
+        bump_window_epoch(&window);
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(&app, PREVIEW_LABEL, WebviewUrl::External(parsed_url))
         .title("Screensaver Preview")
         .inner_size(800.0, 600.0)
         .resizable(true)
@@ -632,38 +977,15 @@ async fn create_preview_window<R: Runtime>(
         .build()
         .map_err(|e| format!("Failed to create preview window: {}", e))?;
 
-    // Destroying a webview does not stop media that is already playing: buffered
-    // audio keeps going in background WebKit/WebView2 processes. That's why
-    // close_all_savers mutes and stops each saver webview and only closes it after
-    // a drain delay — a preview plays the same content and needs the same
-    // treatment. Without this, closing the preview with the window's own close
-    // button leaves audio/video running (the main window's JS preview wrapper
-    // does its own teardown, so only previews opened straight from a remote
-    // options page were affected).
-    let preview = window.clone();
+    // Park (hide + blank) instead of destroying on close, so the same webview
+    // can be reused. Destroying leaks the underlying webview process on macOS.
     let close_app = app.clone();
-    let close_label = label.clone();
+    let close_window = window.clone();
     window.on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-            // Take over the close so teardown isn't racing window destruction.
             api.prevent_close();
-
-            let preview = preview.clone();
-            let app = close_app.clone();
-            let label = close_label.clone();
-            tauri::async_runtime::spawn(async move {
-                autoplay_media::stop_webview(&preview);
-                // Let the WebKit pipeline and CoreAudio drain, as close_all_savers does.
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                let app_handle = app.clone();
-                // destroy(), not close(): close() emits CloseRequested again and
-                // would re-enter this handler.
-                let _ = app.run_on_main_thread(move || {
-                    if let Some(window) = app_handle.get_webview_window(&label) {
-                        let _ = window.destroy();
-                    }
-                });
-            });
+            park_webview_window(&close_window);
+            let _ = close_app.emit("preview-closed", ());
         }
     });
 
@@ -967,6 +1289,22 @@ fn navigate_webview(app: AppHandle, label: String, url: String) -> Result<(), St
     }
 }
 
+/// Command to park a webview window (stop media, navigate about:blank, hide).
+/// Used by the frontend so it can hide the reusable preview/options windows
+/// without going through the core window API permissions.
+#[tauri::command]
+fn park_webview_window_command(app: AppHandle, label: String) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(&label) {
+        park_webview_window(&window);
+        if label == PREVIEW_LABEL {
+            let _ = app.emit("preview-closed", ());
+        }
+        Ok(())
+    } else {
+        Err(format!("Window '{}' not found", label))
+    }
+}
+
 /// Command to evaluate JavaScript in a webview
 #[tauri::command]
 fn evaluate_javascript(app: AppHandle, label: String, script: String) -> Result<String, String> {
@@ -1059,6 +1397,7 @@ pub fn run() {
             close_options,
             preview_screensaver,
             navigate_webview,
+            park_webview_window_command,
             add_active_saver,
             clear_active_savers,
             get_active_savers,
@@ -1189,6 +1528,85 @@ mod tests {
         map.remove("notificationsEnabled");
         let opts: AppOptions = serde_json::from_value(serde_json::Value::Object(map)).unwrap();
         assert!(!opts.notifications_enabled);
+    }
+
+    // ── inject_options_payload ───────────────────────────────────────────────
+
+    /// Decode the payload the way the init script does: strip the marker,
+    /// percent-decode, parse.
+    fn decode_payload(url: &str) -> serde_json::Value {
+        let fragment = url::Url::parse(url)
+            .unwrap()
+            .fragment()
+            .expect("no fragment")
+            .to_string();
+        let encoded = fragment
+            .strip_prefix(OPTIONS_FRAGMENT_PREFIX.trim_start_matches('#'))
+            .expect("missing payload marker")
+            .to_string();
+        let decoded = percent_encoding::percent_decode_str(&encoded)
+            .decode_utf8()
+            .unwrap();
+        serde_json::from_str(&decoded).unwrap()
+    }
+
+    #[test]
+    fn payload_carries_current_options() {
+        let mut opts = AppOptions::default();
+        opts.instance_id = "uuid-123".to_string();
+        opts.starts_in = 7.0;
+        let url = inject_options_payload("https://saver.example.com/", &opts).unwrap();
+
+        let payload = decode_payload(&url);
+        assert_eq!(payload["o"]["instanceId"], "uuid-123");
+        assert_eq!(payload["o"]["startsIn"], 7.0);
+        // Nothing was added to the query, so the host never receives the payload
+        assert!(url::Url::parse(&url).unwrap().query().is_none());
+    }
+
+    #[test]
+    fn payload_survives_values_containing_url_delimiters() {
+        // `&` and `=` would split the payload if it were not fully encoded
+        let mut opts = AppOptions::default();
+        opts.app_name = "a&b=c#d?e".to_string();
+        opts.custom_options = serde_json::json!({ "k": "v&w=x" });
+        let url = inject_options_payload("https://saver.example.com/", &opts).unwrap();
+
+        let payload = decode_payload(&url);
+        assert_eq!(payload["o"]["appName"], "a&b=c#d?e");
+        assert_eq!(payload["o"]["customOptions"]["k"], "v&w=x");
+    }
+
+    #[test]
+    fn payload_preserves_a_fragment_the_url_already_had() {
+        let opts = AppOptions::default();
+        let url = inject_options_payload("https://saver.example.com/?q=1#/route", &opts).unwrap();
+
+        // The original fragment rides inside the payload for the init script to restore
+        assert_eq!(decode_payload(&url)["f"], "/route");
+        // ...and the query is left exactly as it was
+        assert_eq!(url::Url::parse(&url).unwrap().query(), Some("q=1"));
+    }
+
+    #[test]
+    fn payload_records_absent_fragment_as_null() {
+        let opts = AppOptions::default();
+        let url = inject_options_payload("https://saver.example.com/", &opts).unwrap();
+        assert!(decode_payload(&url)["f"].is_null());
+    }
+
+    #[test]
+    fn payload_rejects_an_invalid_url() {
+        assert!(inject_options_payload("not a url", &AppOptions::default()).is_err());
+    }
+
+    #[test]
+    fn init_script_prefers_the_url_payload_over_the_baked_snapshot() {
+        let script = build_init_script(&AppOptions::default());
+        assert!(script.contains("location.hash.indexOf(P)===0"));
+        assert!(script.contains("if(d&&d.o)o=d.o;"));
+        // ...and hands the page back its own fragment
+        assert!(script.contains("history.replaceState"));
     }
 
     #[test]

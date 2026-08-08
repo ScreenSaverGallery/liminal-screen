@@ -37,7 +37,7 @@ interface UpdateInfo {
 const updateAvailable = new Signal<UpdateInfo | null>(null);
 const updateChecking = new Signal<boolean>(false);
 
-let previewWindow: Preview | null = null;
+let previewWindow: Preview = new Preview();
 
 // ── UI Elements ────────────────────────────────────────────────────────────
 
@@ -106,6 +106,9 @@ function setupEventListeners(): void {
     } catch {
       /* ignore */
     }
+  });
+  listen("preview-closed", () => {
+    status.update((s) => ({ ...s, previewActive: false }));
   });
   getCurrentWindow().onCloseRequested((event: any) => {
     event.preventDefault();
@@ -450,17 +453,13 @@ async function checkScreensaverConflict(): Promise<void> {
 // ── Preview ────────────────────────────────────────────────────────────────
 
 async function previewScreensaver(): Promise<void> {
-  if (previewWindow) await previewWindow.hide();
   try {
     const opts = options.get();
     const url = opts?.debug
       ? import.meta.env.VITE_SAVER_URL_DEBUG ||
         "https://saver.example.com/debug"
       : import.meta.env.VITE_SAVER_URL || "https://saver.example.com";
-    previewWindow = new Preview(url);
-    await previewWindow.show(() => {
-      status.update((s) => ({ ...s, previewActive: false }));
-    });
+    await previewWindow.show(url);
     status.update((s) => ({ ...s, previewActive: true }));
   } catch (error) {
     console.error("Failed to create preview window:", error);

@@ -13,11 +13,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Deliberately NOT "macos-private-api": it would let wry switch off the
+# WKWebView's opaque white base layer (see README, "Screen-edge hairline"), but
+# it does so via a private API, which is a blocker for publishing.
 tauri = { version = "2", features = ["tray-icon", "devtools"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
+percent-encoding = "2"
 tauri-plugin-store = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
@@ -43,6 +47,8 @@ windows = { version = "0.62", features = [
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+# NSRect/CGRect with the Encode impls `msg_send!` needs for struct returns
+objc2-foundation = "0.3"
 core-foundation = "0.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
