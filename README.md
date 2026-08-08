@@ -217,8 +217,8 @@ Minimal, reactive UI — no framework. Uses a lightweight `Signal` class for sta
 The Rust backend is the engine — it handles all screensaver lifecycle, window management, power monitoring, and persistence.
 
 - `main.rs` — App entry, Tauri plugin registration (store, dialog, opener)
-- `lib.rs` — Core setup: window creation, system tray with dynamic tooltip (from `VITE_APP_NAME`), options CRUD, screensaver engine orchestration, `factory_reset_options` command, `build_init_script` (injects `navigator.id`, a `LiminalScreen/{version} ({appName})` suffix on `navigator.userAgent`/`navigator.appVersion`, and the frozen `navigator.liminalScreen` options snapshot into all remote windows at document-start)
-- `screensaver_engine.rs` — Screensaver state machine: monitors idle time, creates/destroys fullscreen windows on activation/deactivation, manages multi-display layout
+- `lib.rs` — Core setup: window creation, system tray with dynamic tooltip (from `VITE_APP_NAME`), options CRUD, screensaver engine orchestration, `factory_reset_options` command, `build_init_script` (injects `navigator.id`, a `LiminalScreen/{version} ({appName})` suffix on `navigator.userAgent`/`navigator.appVersion`, and the frozen `navigator.liminalScreen` options object into all remote windows at document-start), and `park_webview_window` (window pooling — see below)
+- `screensaver_engine.rs` — Screensaver state machine: monitors idle time, shows/parks fullscreen windows on activation/deactivation, manages multi-display layout
 - `display_manager.rs` — Monitor detection and logical coordinate calculation for multi-monitor fullscreen positioning
 - `power_monitor.rs` — Platform-specific idle time detection (macOS IOKit, Windows `GetLastInputInfo`, Linux systemd-inhibit + X11 screensaver queries)
 - `autoplay_media.rs` — Per-window autoplay permission configuration for WKWebView (macOS) and WebView2 (Windows)
@@ -254,17 +254,29 @@ Reusable SDK for fork developers who host their own remote options page, publish
 
 ## Technical Details
 
+### Window Pooling
+
+Webviews are never destroyed. wry deliberately over-retains the `WKWebView` on drop (`Drop for InnerWebView` calls `webview.retain()` to avoid a use-after-free), so a destroyed webview and its WebKit helper processes are never released — every create/destroy cycle leaked another set, and memory climbed with each activation.
+
+So each window that can open more than once — one saver per display, plus preview and options — is created at most once and then **parked** instead of closed: media stopped, navigated to `about:blank`, hidden. The next activation re-navigates and re-shows the same webview. Baseline memory is a fixed cost rather than a leak; the helper processes stay in Activity Monitor, but their count no longer grows.
+
+Because a pooled webview keeps the `initialization_script` it was built with — and there is no way to replace that on a live webview — the options snapshot baked in at creation would go stale as soon as the user saved a setting. Each navigation therefore carries the current options in the URL fragment (`#__liminal=…`), which the init script prefers over the baked snapshot and strips (restoring any fragment the URL already had) before the page's own scripts run. The fragment is used rather than a query parameter because fragments are not sent to the server.
+
 ### Multi-Monitor Fullscreen
 
-macOS only allows one fullscreen transition at a time. The app staggers fullscreen calls with 600ms delays to ensure all monitors are covered properly.
+On macOS the saver windows are raised to `NSScreenSaverWindowLevel` rather than put into native fullscreen: native fullscreen gives each window its own Space, which costs an animation each way, permits only one transition at a time, and leaves `hide()` unreliable until it settles — all of which fight window pooling. At the screen-saver level the windows cover the menu bar and Dock, and show/hide is immediate.
+
+The collection behavior is `canJoinAllSpaces | fullScreenAuxiliary`. `fullScreenAuxiliary` is load-bearing: without it the saver is confined to the desktop Space and never appears over an app the user has fullscreened. Do not use `fullScreenNone` here — it is the opt-out flag and produces a saver that runs (audio and all) but is invisible from inside any fullscreen app.
+
+Other platforms still use native fullscreen, staggered by 600 ms, since some window managers handle only one transition at a time.
 
 ### Audio Playback
 
 The app uses a layered approach to stop audio cleanly:
 1. JavaScript mute + pause (stops media elements)
 2. Platform-native `stopLoading` (kills WebKit pipeline)
-3. 500ms delay (CoreAudio drains)
-4. Window close (destroys webview)
+3. Navigation to `about:blank` (tears down the page and its media)
+4. Window hidden and kept for reuse (see Window Pooling)
 
 ### Autoplay Configuration
 

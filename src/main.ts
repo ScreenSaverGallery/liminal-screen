@@ -110,11 +110,6 @@ function setupEventListeners(): void {
   listen("preview-closed", () => {
     status.update((s) => ({ ...s, previewActive: false }));
   });
-  listen<string>("webview-closed", (event) => {
-    if (previewWindow.getLabel() === event.payload) {
-      status.update((s) => ({ ...s, previewActive: false }));
-    }
-  });
   getCurrentWindow().onCloseRequested((event: any) => {
     event.preventDefault();
     getCurrentWindow().hide();
