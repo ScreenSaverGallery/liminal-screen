@@ -690,44 +690,6 @@ fn env_num(name: &str) -> Option<isize> {
     }
 }
 
-/// macOS: log the WindowServer's settled view of a saver window.
-///
-/// `occlusionState` is recomputed asynchronously, so reading it immediately after
-/// `orderFront` reports a stale value. This runs once the compositor has caught
-/// up, which is what makes `NSWindowOcclusionStateVisible` (bit 1) meaningful:
-/// clear means macOS is deliberately not showing an otherwise healthy window.
-#[cfg(target_os = "macos")]
-fn log_settled_window_state<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) {
-    let window = window.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-        let label = window.label().to_string();
-        let _ = window.with_webview(move |pw| unsafe {
-            use objc2::msg_send;
-            use objc2::runtime::{AnyObject, Bool};
-
-            let wkwebview = &*(pw.inner() as *mut AnyObject);
-            let ns_window: *mut AnyObject = msg_send![wkwebview, window];
-            if ns_window.is_null() {
-                return;
-            }
-            let occlusion: usize = msg_send![&*ns_window, occlusionState];
-            let visible: Bool = msg_send![&*ns_window, isVisible];
-            let level: isize = msg_send![&*ns_window, level];
-            let screen: *mut AnyObject = msg_send![&*ns_window, screen];
-            println!(
-                "macOS {} settled: occlusion=0x{:x} onScreenBit={} visible={} level={} hasScreen={}",
-                label,
-                occlusion,
-                occlusion & 2 != 0,
-                visible.as_bool(),
-                level,
-                !screen.is_null(),
-            );
-        });
-    });
-}
-
 /// macOS: make a saver window cover the screen without native fullscreen.
 ///
 /// Native fullscreen puts each window in its own Space, which costs a ~0.5 s
@@ -739,6 +701,7 @@ fn log_settled_window_state<R: Runtime>(window: &tauri::webview::WebviewWindow<R
 pub fn apply_saver_window_level<R: Runtime>(window: &tauri::webview::WebviewWindow<R>) {
     use objc2::msg_send;
     use objc2::runtime::{AnyObject, Bool};
+    use objc2_foundation::NSRect;
 
     // NSScreenSaverWindowLevel. Enough on its own: a level only orders windows
     // *within* a Space, and once the collection behavior below lets the saver join
@@ -779,6 +742,25 @@ pub fn apply_saver_window_level<R: Runtime>(window: &tauri::webview::WebviewWind
         }
         let _: () = msg_send![&*ns_window, setLevel: level];
         let _: () = msg_send![&*ns_window, setCollectionBehavior: behavior];
+
+        // Geometry check: a saver that looks wrong at the screen edge is almost
+        // always one of these three rects disagreeing. When they match, the
+        // window covers the screen and the webview covers the window, so
+        // anything visible at the edge is being painted by the webview itself.
+        let win_frame: NSRect = msg_send![&*ns_window, frame];
+        let content_view: *mut AnyObject = msg_send![&*ns_window, contentView];
+        let content_bounds: NSRect = msg_send![&*content_view, bounds];
+        let wv_frame: NSRect = msg_send![wkwebview, frame];
+        println!(
+            "macOS {} frames: window={:?}+{:?} content={:?}+{:?} webview={:?}+{:?}",
+            label,
+            (win_frame.origin.x, win_frame.origin.y),
+            (win_frame.size.width, win_frame.size.height),
+            (content_bounds.origin.x, content_bounds.origin.y),
+            (content_bounds.size.width, content_bounds.size.height),
+            (wv_frame.origin.x, wv_frame.origin.y),
+            (wv_frame.size.width, wv_frame.size.height),
+        );
 
         // Deliberately NOT orderFrontRegardless: under the Accessory policy the
         // plain `show()` already puts the saver over the active Space, and it

@@ -149,7 +149,6 @@ fn log_saver_geometry<R: tauri::Runtime>(
 #[cfg(target_os = "macos")]
 fn apply_saver_presentation<R: tauri::Runtime>(window: &tauri::webview::WebviewWindow<R>) {
     super::apply_saver_window_level(window);
-    super::log_settled_window_state(window);
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -616,6 +615,13 @@ impl ScreensaverEngine {
         .skip_taskbar(true)
         .visible(false)
         .focused(true)
+        // Window layer on every platform, plus the webview's
+        // `underPageBackgroundColor` on macOS 12+; both otherwise default to
+        // white. This does NOT fix the macOS screen-edge hairline (see README) —
+        // the webview covers the window exactly, so the window colour is never
+        // visible there. It does avoid a white flash between the window being
+        // shown and the page's first paint.
+        .background_color(tauri::webview::Color(0, 0, 0, 255))
         .initialization_script(super::build_init_script(&options))
         // speechSynthesis fallback for WebKitGTK (no-op where the native API exists)
         .initialization_script(super::speech::POLYFILL_JS);

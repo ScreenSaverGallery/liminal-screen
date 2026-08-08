@@ -274,6 +274,17 @@ On macOS the saver windows are **not** put into native fullscreen. Native fullsc
 
 Other platforms still use native fullscreen, staggered by 600 ms, since some window managers handle only one transition at a time.
 
+### Screen-edge hairline (macOS, known)
+
+A ~1px light line can appear at the very edge of the saver on macOS. It is **not** a geometry bug — the window covers the screen exactly and the webview covers the window exactly (the `macOS … frames:` log line reports all three rects; when they match, geometry is ruled out). It is WebKit's opaque white base layer showing through wherever the page doesn't paint the last device pixel.
+
+There are two ways to remove it, and only one of them is acceptable here:
+
+- **Fix it in the saver page (recommended).** Give `html, body` an opaque background — `html, body { margin: 0; background: #000; }`. The white base is only visible where nothing is painted over it, so an opaque page background hides it regardless of whether the page's *content* reaches the edge. This is the real fix and it costs nothing.
+- **Enable `macos-private-api` (rejected).** That switches on `wry/transparent`, which turns off the base layer via a private `drawsBackground` KVC key. It works, but it is a private API and therefore a blocker for publishing, so this project deliberately does not enable it. Don't add it to the `tauri` features.
+
+Note that the window's `background_color` cannot fix this: the webview covers 100% of the window, so the window colour is never visible at the edge. It is set anyway to avoid a white flash before the page's first paint.
+
 ### Audio Playback
 
 The app uses a layered approach to stop audio cleanly:

@@ -2099,6 +2099,7 @@ dependencies = [
  "dotenv",
  "notify-rust",
  "objc2",
+ "objc2-foundation",
  "percent-encoding",
  "serde",
  "serde_json",
