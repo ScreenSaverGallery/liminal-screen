@@ -249,6 +249,19 @@ fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::err
         options.autostart = autolaunch.is_enabled().unwrap_or(false);
     }
 
+    // Accessory activation policy is required for the saver to appear over
+    // another app's full-screen Space, which is where most users are most of the
+    // time. A Regular (Dock-visible) app is a full participant in activation, so
+    // showing a window is an activation request — and macOS answers that from
+    // inside someone else's full-screen Space by switching Spaces or refusing,
+    // neither of which puts a saver on screen. Accessory apps float over the
+    // active Space instead of competing for it, which is how menu-bar utilities
+    // work; this app already lives in the tray, so it loses nothing but the Dock
+    // icon. Verified by bisection: nothing else (window level, collection
+    // behavior, orderFrontRegardless) substitutes for it.
+    #[cfg(target_os = "macos")]
+    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
     // Initialize app state with loaded options
     let app_state = AppState {
         active_savers: std::sync::Mutex::new(Vec::new()),
@@ -727,8 +740,13 @@ pub fn apply_saver_window_level<R: Runtime>(window: &tauri::webview::WebviewWind
     use objc2::msg_send;
     use objc2::runtime::{AnyObject, Bool};
 
-    // NSScreenSaverWindowLevel: above the menu bar (24), the Dock (20) and
-    // ordinary floating windows (3).
+    // NSScreenSaverWindowLevel. Enough on its own: a level only orders windows
+    // *within* a Space, and once the collection behavior below lets the saver join
+    // another app's full-screen Space, that app's own window is at
+    // NSNormalWindowLevel (0). Going higher buys nothing and costs something —
+    // CGShieldingWindowLevel() (2147483628 on macOS 26) also outranks
+    // kCGAssistiveTechHighWindowLevel (1500), so it would occlude VoiceOver,
+    // Switch Control and Zoom, which should stay above a screensaver.
     const NS_SCREEN_SAVER_WINDOW_LEVEL: isize = 1000;
     // canJoinAllSpaces | fullScreenAuxiliary.
     //
@@ -761,9 +779,25 @@ pub fn apply_saver_window_level<R: Runtime>(window: &tauri::webview::WebviewWind
         }
         let _: () = msg_send![&*ns_window, setLevel: level];
         let _: () = msg_send![&*ns_window, setCollectionBehavior: behavior];
+
+        // Deliberately NOT orderFrontRegardless: under the Accessory policy the
+        // plain `show()` already puts the saver over the active Space, and it
+        // leaves the window key — so keystrokes that dismiss the saver are
+        // swallowed rather than delivered to whatever is underneath.
+        // NSApplicationActivationPolicy: 0 = Regular, 1 = Accessory, 2 = Prohibited.
+        let ns_app: *mut AnyObject = msg_send![objc2::class!(NSApplication), sharedApplication];
+        let policy: isize = msg_send![ns_app, activationPolicy];
         println!(
-            "macOS saver window level applied to {} (level={} behavior=0x{:x})",
-            label, level, behavior
+            "SAVER CONFIG {}: level={} behavior=0x{:x} activationPolicy={}",
+            label,
+            level,
+            behavior,
+            match policy {
+                0 => "Regular",
+                1 => "Accessory",
+                2 => "Prohibited",
+                _ => "unknown",
+            }
         );
 
         // Read the compositor's view of the window back. A window that reports
