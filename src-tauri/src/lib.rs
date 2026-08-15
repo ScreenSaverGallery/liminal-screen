@@ -468,8 +468,8 @@ pub fn inject_options_payload(url: &str, options: &AppOptions) -> Result<String,
     // Encode to `[A-Za-z0-9%]` only: the result has to survive as a URL fragment
     // and be readable with `decodeURIComponent`, and option values can contain
     // anything — including the `&` and `=` that would otherwise split the payload.
-    let encoded =
-        percent_encoding::utf8_percent_encode(&json, percent_encoding::NON_ALPHANUMERIC).to_string();
+    let encoded = percent_encoding::utf8_percent_encode(&json, percent_encoding::NON_ALPHANUMERIC)
+        .to_string();
 
     // `Url::set_fragment` does not escape `%`, so the encoding above is preserved.
     parsed.set_fragment(Some(&format!(
@@ -1417,6 +1417,7 @@ pub fn run() {
             power_monitor::get_system_idle_time,
             power_monitor::get_system_idle_state,
             power_monitor::is_on_battery_power,
+            power_monitor::is_media_active,
             power_monitor::get_os_screensaver_status,
             power_monitor::lock_screen,
             power_monitor::blank_screen,
