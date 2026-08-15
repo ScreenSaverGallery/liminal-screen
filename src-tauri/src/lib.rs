@@ -1418,6 +1418,7 @@ pub fn run() {
             power_monitor::get_system_idle_state,
             power_monitor::is_on_battery_power,
             power_monitor::is_media_active,
+            power_monitor::get_media_blocker_name,
             power_monitor::get_os_screensaver_status,
             power_monitor::lock_screen,
             power_monitor::blank_screen,

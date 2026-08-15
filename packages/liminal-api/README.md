@@ -17,6 +17,7 @@ The Liminal Screen API lets remote options pages communicate with the Tauri back
 - **Screensaver preview**: `previewScreensaver()` opens a windowed preview of the configured saver URL
 - **Event sync**: `startAutoSync()` pushes real-time option updates from the backend
 - **System screensaver control**: detect a conflicting OS screensaver and disable/restore it so Liminal is the only screensaver
+- **Media detection**: `isMediaActive()` reports when the saver is suppressed, `getMediaBlockerName()` names the process responsible
 - **App updates**: `checkForUpdates()`, `installUpdate()` and an `update-available` subscription
 - **App version**: `getVersion()` returns the running application version
 - **Zero dependencies**: No `@tauri-apps/api` needed — uses `window.__TAURI__` globals directly
@@ -154,6 +155,26 @@ if (saved != null) {
 }
 ```
 
+### Why hasn't the saver started?
+
+`isMediaActive()` alone tells you *that* something is suppressing the saver — genuine
+media playback is usually obvious to the user, but an idle background app holding the
+same kind of assertion is not, so pair it with `getMediaBlockerName()` to say *what*:
+
+```javascript
+setInterval(async () => {
+  const blocked = await liminalAPI.isMediaActive();
+  if (!blocked) {
+    statusEl.textContent = '';
+    return;
+  }
+  const who = await liminalAPI.getMediaBlockerName();
+  statusEl.textContent = who
+    ? `${who} is blocking ${appName} from starting.`
+    : 'Something is blocking the screensaver from starting.';
+}, 5000);
+```
+
 ### App updates
 
 ```javascript
@@ -192,6 +213,8 @@ document.getElementById('version').textContent = `v${await liminalAPI.getVersion
 | `disableOsScreensaver()` | `Promise<void>` | Disable the OS screensaver so it can't cover Liminal (prior value saved) |
 | `restoreOsScreensaver()` | `Promise<void>` | Restore the OS screensaver to the saved value |
 | `getSavedOsScreensaverIdle()` | `Promise<number \| null>` | Saved OS timeout (seconds) if Liminal disabled it, else `null` |
+| `isMediaActive()` | `Promise<boolean>` | `true` when a video/call is holding a display-sleep assertion, blocking the saver |
+| `getMediaBlockerName()` | `Promise<string \| null>` | Name of the process responsible (e.g. `"LocalSend"`), or `null` if none |
 | `ask(message, options?)` | `Promise<boolean>` | Confirmation dialog (falls back to `confirm()`) |
 | `showMessage(message, options?)` | `Promise<void>` | Message dialog (falls back to `alert()`) |
 | `checkForUpdates()` | `Promise<UpdateInfo \| null>` | Check for an app update; `null` when none (or outside Tauri) |
@@ -274,6 +297,7 @@ ships.
 | `previewScreensaver()` | `0.2.0`+ | Uses the `create_preview_window` command |
 | `openUrl()`, `ask()`, `showMessage()`, `startAutoSync()` | `0.3.0`+ | Need their permission granted to the options page's **remote origin**; the app registers that grant at runtime from `VITE_OPTIONS_URL`. On older builds, package `0.3.1`+ logs a warning and falls back instead of throwing |
 | `closeOptions()` | `0.3.0`+ | Needs the `close_options` command; rejects with `LiminalAPIError` on older builds |
+| `isMediaActive()`, `getMediaBlockerName()` | unreleased (after `0.2.0`) | Need the `is_media_active`/`get_media_blocker_name` commands; reject with `LiminalAPIError` on older builds. Resolve `false`/`null` (not an error) on Windows/Linux, where detection isn't implemented |
 
 Fork developers: if you maintain your own
 `src-tauri/capabilities/options.json`, note that listing a permission isn't

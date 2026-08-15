@@ -338,6 +338,52 @@ export class LiminalAPI {
   }
 
   /**
+   * True when another process — a video player, video call, etc. — is
+   * holding a display-sleep-blocking power assertion. The screensaver engine
+   * already treats this as user activity and won't activate while it's true;
+   * expose it so an options page can tell the user *why* the saver hasn't
+   * started instead of leaving them thinking it's broken.
+   *
+   * macOS only for now. Always `false` on Windows/Linux and outside Tauri.
+   */
+  async isMediaActive(): Promise<boolean> {
+    const invoke = tauriInvoke();
+    if (!invoke) return false;
+    try {
+      return (await invoke('is_media_active')) as boolean;
+    } catch (e) {
+      throw new LiminalAPIError('Failed to check media-active status', e);
+    }
+  }
+
+  /**
+   * Name of the process holding the display-sleep assertion `isMediaActive()`
+   * detected (e.g. `"LocalSend"`), or `null` if nothing is. Pair with
+   * `isMediaActive()` to explain a suppressed saver:
+   *
+   * ```javascript
+   * if (await liminalAPI.isMediaActive()) {
+   *   const who = await liminalAPI.getMediaBlockerName();
+   *   message = who ? `${who} is blocking ${appName} from starting.` : 'Something is blocking the screensaver from starting.';
+   * }
+   * ```
+   *
+   * Shells out to read the OS's per-process assertion list, so prefer calling
+   * this only when `isMediaActive()` is already `true` rather than on every
+   * poll tick. macOS only for now. Always `null` on Windows/Linux and outside
+   * Tauri.
+   */
+  async getMediaBlockerName(): Promise<string | null> {
+    const invoke = tauriInvoke();
+    if (!invoke) return null;
+    try {
+      return ((await invoke('get_media_blocker_name')) as string | null) ?? null;
+    } catch (e) {
+      throw new LiminalAPIError('Failed to get media blocker name', e);
+    }
+  }
+
+  /**
    * Subscribe to options-updated events dispatched via the window event bus.
    * Works without Tauri — useful when setOptions() is called locally.
    * Returns an unsubscribe function.

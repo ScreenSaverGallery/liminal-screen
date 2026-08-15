@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+
+- `isMediaActive()` — reports whether a video player, video call, etc. is
+  holding a display-sleep power assertion that's currently suppressing the
+  saver, so an options page can tell the user why it hasn't started rather
+  than leaving them thinking it's broken. Backed by the `is_media_active`
+  command; macOS only (always resolves `false` on Windows/Linux, where this
+  detection isn't implemented). Requires an app build with the
+  `is_media_active` command (unreleased as of app 0.2.0) — rejects with
+  `LiminalAPIError` on older builds.
+
+- `getMediaBlockerName()` — names the process responsible for a suppressed
+  saver (e.g. `"LocalSend"`), or `null` if none. `isMediaActive()` alone only
+  tells you *that* something is blocking the saver — obvious for genuine media
+  playback, but not for an idle background app holding the same kind of
+  assertion; this fills in the *what*. Reads the OS's per-process assertion
+  list, so it's heavier than `isMediaActive()` — call it only once you already
+  know the saver is blocked. macOS only; same app-version requirement and
+  error behavior as `isMediaActive()`.
+
 ## 0.4.0
 
 ### Added
