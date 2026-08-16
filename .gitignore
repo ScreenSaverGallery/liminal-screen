@@ -28,6 +28,7 @@ packages/liminal-api/examples/remote-options/main.js
 
 # Custom
 .env
+secrets
 
 # Generated icons
 src-tauri/icons/*
