@@ -25,6 +25,8 @@
 #   TAURI_SIGNING_PRIVATE_KEY          — minisign private key matching
 #                                        VITE_UPDATER_PUBKEY in RELEASE_ENV
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — its password (may be empty)
+#   APP_ICON                           — base64-encoded 1024x1024+ PNG app icon
+#                                        (icon files are gitignored per fork)
 #
 # Optional repository secrets (macOS Developer ID signing + notarization):
 #   APPLE_CERTIFICATE                  — base64 of a Developer ID Application .p12
@@ -119,9 +121,17 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
+      # Fork-specific app icon files are gitignored. In CI the source icon is
+      # injected as the APP_ICON repository secret (base64-encoded PNG), decoded
+      # to app-icon.png, and the full src-tauri/icons/* set is regenerated.
+      - name: Materialize and generate icons
+        env:
+          APP_ICON: ${{ secrets.APP_ICON }}
+        run: bun run scripts/materialize-icon.ts
+
       # The Rust backend bakes VITE_* values in at compile time via option_env!,
       # which reads the process environment — a .env file on disk is NOT enough.
-      # Without this, the binary ships with about:blank as the saver URL.
+      # Without this, the compiled binary ships with about:blank as the saver URL.
       - name: Export .env to the build environment
         shell: bash
         run: bun run scripts/export-env-to-github.ts

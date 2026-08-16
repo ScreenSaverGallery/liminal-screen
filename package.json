@@ -16,7 +16,7 @@
     "tauri:dev:inner": "bun run scripts/build-tauri-config.ts && tauri dev --config src-tauri/.tauri-runtime.conf.json",
     "tauri:dev:x11": "GDK_BACKEND=x11 bun --env-file=.env run tauri:dev:inner",
     "tauri:build": "bun --env-file=.env run tauri:build:inner",
-    "tauri:build:inner": "bun run scripts/build-tauri-config.ts && tauri build --no-sign --config src-tauri/.tauri-runtime.conf.json",
+    "tauri:build:inner": "bun run scripts/build-tauri-config.ts && bun run scripts/materialize-icon.ts && tauri build --no-sign --config src-tauri/.tauri-runtime.conf.json",
     "tauri:release": "bun run scripts/release.ts"
   },
   "dependencies": {

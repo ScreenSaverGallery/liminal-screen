@@ -84,15 +84,7 @@ VITE_DEFAULT_AUTOSTART=true       # Register as OS login item on first install?
 
 ### 4. Replace the App Icon
 
-  Note: This will be improved in future, as generating the icon set will become part of the build process.
-
-Tauri ships with a default icon set based on its logo — not what you want for your fork. Place a `app-icon.png` (minimum 1024x1024px) in the project root and run:
-
-```bash
-bun tauri icon
-```
-
-This generates all platform icon files in `src-tauri/icons/` (macOS `.icns`, Windows `.ico`, iOS, Android, and all PNG sizes). See [Tauri Icons docs](https://v2.tauri.app/develop/icons/) for details.
+Place an `app-icon.png` (minimum 1024×1024 px) in the project root. For local builds, `bun run tauri:build` now generates the full `src-tauri/icons/*` set automatically from that source file. For release builds, the icon is injected via the `APP_ICON` repository secret (see [Releases (CI/CD)](#releases-cicd)).
 
 ### 5. Edit `package.json` (Optional)
 
@@ -146,6 +138,14 @@ Requires the [GitHub CLI](https://cli.github.com/) (`gh`) authenticated against 
    gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/liminal-screen.key
    gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
    ```
+
+4. **Upload your app icon** (required because icon files are gitignored so forks can provide their own). It must be a 1024×1024+ PNG, base64-encoded:
+
+   ```bash
+   gh secret set APP_ICON < <(base64 -w 0 app-icon.png)
+   ```
+
+   CI decodes the secret to `app-icon.png` and runs `bun tauri icon` to generate the full `src-tauri/icons/*` set before the build.
 
 ### Optional: macOS Code Signing & Notarization
 
@@ -210,6 +210,7 @@ When the build finishes, **review the draft release and publish it manually**. P
 
 - **Version bumps** need no secret changes and create no commit on `main` — CI stamps `VITE_APP_VERSION` and the committed version files from the tag.
 - **URL or branding changes**: update your local `.env`, then re-run `gh secret set RELEASE_ENV < .env`.
+- **Icon changes**: re-run `gh secret set APP_ICON < <(base64 -w 0 app-icon.png)`.
 - **Code signing**: by default builds are not notarized (macOS) or Authenticode-signed (Windows) — users see the usual Gatekeeper/SmartScreen warnings. You can opt into signed + notarized macOS builds by setting the optional `APPLE_*` repository secrets described above; Windows certificates can be added later without structural changes.
 
 ## Configuration Behavior

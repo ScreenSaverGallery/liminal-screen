@@ -363,14 +363,16 @@ bun run tauri:dev
 
 # Production build — wraps the build in `bun --env-file=.env` so VITE_* vars reach
 # cargo/rustc via the OS environment (for option_env! at compile time), then
-# generates the merge-patch and runs tauri build
+# generates the merge-patch, materializes/regenerates icons from app-icon.png,
+# and runs tauri build
 bun run tauri:build
 
 # Other Tauri CLI subcommands (info, icon, signer generate, …) use the plain `tauri` script:
 bun run tauri info
 bun run tauri icon
 
-# Icon generation (after placing app-icon.png)
+# Manual icon generation (after placing app-icon.png) — normally not needed because
+# `bun run tauri:build` runs this automatically
 bun tauri icon
 
 # liminal-api build
