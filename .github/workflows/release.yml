@@ -162,6 +162,12 @@ jobs:
       # secrets are all-or-nothing: all set → signed+notarized build; none set
       # → unsigned build exactly as before. Partial configuration fails fast
       # here before the expensive compilation/notarization work starts.
+      #
+      # IMPORTANT: these env vars are written to $GITHUB_ENV only when all six
+      # are present. Passing empty strings directly to the tauri-action step
+      # makes Tauri CLI attempt to import a non-existent certificate, which fails
+      # the macOS build. When the secrets are absent, no APPLE_* env vars reach
+      # the build step, so the bundle is produced unsigned.
       - name: Check macOS signing configuration
         if: matrix.platform == 'macos-latest'
         shell: bash
@@ -189,6 +195,13 @@ jobs:
             echo "No APPLE_* signing secrets set — building an unsigned macOS bundle (Gatekeeper will warn on install)."
           elif [ "$set_count" -eq "${#required[@]}" ]; then
             echo "All APPLE_* signing secrets present — building a signed + notarized macOS bundle."
+            # Export only to $GITHUB_ENV so the build step sees real values rather
+            # than empty strings. $GITHUB_ENV is scoped to this job, so non-macOS
+            # runners are unaffected.
+            delim="__APPLE_SECRET_EOF__"
+            for var in "${required[@]}"; do
+              printf '%s<<%s\n%s\n%s\n' "$var" "$delim" "${!var}" "$delim" >> "$GITHUB_ENV"
+            done
           else
             echo "::error::Partial macOS signing configuration — set ALL of ${required[*]}, or none of them. Missing: ${missing[*]}" >&2
             exit 1
@@ -232,11 +245,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Liminal Screen ${{ github.ref_name }}"
