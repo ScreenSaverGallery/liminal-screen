@@ -142,7 +142,7 @@ Requires the [GitHub CLI](https://cli.github.com/) (`gh`) authenticated against 
 4. **Upload your app icon** (required because icon files are gitignored so forks can provide their own). It must be a 1024×1024+ PNG, base64-encoded:
 
    ```bash
-   gh secret set APP_ICON < <(base64 -w 0 app-icon.png)
+   base64 -i app-icon.png | gh secret set APP_ICON
    ```
 
    CI decodes the secret to `app-icon.png` and runs `bun tauri icon` to generate the full `src-tauri/icons/*` set before the build.
