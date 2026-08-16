@@ -25,6 +25,20 @@
 #   TAURI_SIGNING_PRIVATE_KEY          — minisign private key matching
 #                                        VITE_UPDATER_PUBKEY in RELEASE_ENV
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — its password (may be empty)
+#
+# Optional repository secrets (macOS Developer ID signing + notarization):
+#   APPLE_CERTIFICATE                  — base64 of a Developer ID Application .p12
+#   APPLE_CERTIFICATE_PASSWORD         — password for that .p12
+#   APPLE_SIGNING_IDENTITY             — e.g. "Developer ID Application: Name (TEAMID)"
+#   APPLE_API_ISSUER                   — App Store Connect Issuer ID (UUID)
+#   APPLE_API_KEY                      — App Store Connect Key ID (10 characters)
+#   APPLE_API_KEY_P8                   — base64 of the downloaded AuthKey_<KeyID>.p8
+#
+# These six are all-or-nothing: set all of them to sign + notarize the macOS
+# bundle, or leave all unset to keep producing an unsigned build (the default
+# for forks without an Apple Developer Program membership). See
+# .hermes/plans/macos-codesign-notarization/PLAN.md and
+# https://v2.tauri.app/distribute/sign/macos/ for setup details.
 
 name: Release
 
@@ -134,15 +148,96 @@ jobs:
           bun run scripts/stamp-version.ts "$version"
           echo "Stamped $version into package.json / Cargo.toml / Cargo.lock"
 
+      # Optional macOS Developer ID signing + notarization. The six APPLE_*
+      # secrets are all-or-nothing: all set → signed+notarized build; none set
+      # → unsigned build exactly as before. Partial configuration fails fast
+      # here before the expensive compilation/notarization work starts.
+      - name: Check macOS signing configuration
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          required=(APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                    APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_P8)
+          set_count=0
+          missing=()
+          for var in "${required[@]}"; do
+            if [ -n "${!var}" ]; then
+              set_count=$((set_count + 1))
+            else
+              missing+=("$var")
+            fi
+          done
+
+          if [ "$set_count" -eq 0 ]; then
+            echo "No APPLE_* signing secrets set — building an unsigned macOS bundle (Gatekeeper will warn on install)."
+          elif [ "$set_count" -eq "${#required[@]}" ]; then
+            echo "All APPLE_* signing secrets present — building a signed + notarized macOS bundle."
+          else
+            echo "::error::Partial macOS signing configuration — set ALL of ${required[*]}, or none of them. Missing: ${missing[*]}" >&2
+            exit 1
+          fi
+
+      # Materialize the App Store Connect API .p8 key under $RUNNER_TEMP and
+      # export APPLE_API_KEY_PATH for the build step. Only runs when the key
+      # secret exists; unconfigured forks skip this with no side effects.
+      - name: Materialize App Store Connect API key
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          if [ -z "$APPLE_API_KEY_P8" ]; then
+            echo "No App Store Connect API key configured — skipping (unsigned build)."
+            exit 0
+          fi
+
+          key_dir="$RUNNER_TEMP/appstoreconnect"
+          mkdir -p "$key_dir"
+          chmod 700 "$key_dir"
+          key_path="$key_dir/AuthKey_${APPLE_API_KEY}.p8"
+
+          # `base64 -D` is the macOS spelling; the runner is always macOS here.
+          printf '%s' "$APPLE_API_KEY_P8" | base64 -D > "$key_path"
+          chmod 600 "$key_path"
+
+          if ! grep -q "BEGIN PRIVATE KEY" "$key_path"; then
+            echo "::error::APPLE_API_KEY_P8 did not decode to a PEM private key — re-run: base64 -i AuthKey_XXXX.p8 | pbcopy" >&2
+            exit 1
+          fi
+
+          echo "APPLE_API_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+          echo "App Store Connect API key written to \$RUNNER_TEMP (key id ${APPLE_API_KEY})."
+
       - name: Build and upload release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Liminal Screen ${{ github.ref_name }}"
           releaseBody: "See the assets below to download and install this version."
           releaseDraft: true
           args: --config src-tauri/.tauri-runtime.conf.json ${{ matrix.args }}
+
+      # Always remove the materialized .p8 from the runner, even if the build
+      # or notarization step failed. GitHub-hosted runners wipe $RUNNER_TEMP
+      # between jobs, but this protects self-hosted runners too.
+      - name: Remove App Store Connect API key
+        if: always() && matrix.platform == 'macos-latest'
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/appstoreconnect"

@@ -2,7 +2,7 @@
 
 **Created:** 2026-08-16
 **Updated:** 2026-08-16 — switched notarization auth from Apple ID + app-specific password to an **App Store Connect API key**
-**Status:** Draft
+**Status:** Implemented
 
 ---
 

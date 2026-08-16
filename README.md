@@ -147,6 +147,50 @@ Requires the [GitHub CLI](https://cli.github.com/) (`gh`) authenticated against 
    gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
    ```
 
+### Optional: macOS Code Signing & Notarization
+
+This is **optional** and only useful if you have a paid Apple Developer Program membership. Forks without one keep producing an unsigned macOS build exactly as before — leaving the secrets below unset is the default and is safe.
+
+You will need a **Developer ID Application** certificate (not an "Apple Development" or "Mac App Distribution" certificate, which are for Xcode/App Store builds).
+
+1. **Export the certificate.** In Keychain Access, select your Developer ID Application certificate and its private key, export as a `.p12`, and set a password. Then base64-encode it:
+
+   ```bash
+   base64 -i DeveloperIDApplication.p12 | pbcopy
+   ```
+
+2. **Create an App Store Connect API key.** Go to [App Store Connect](https://appstoreconnect.apple.com) → **Users and Access** → **Integrations** → **App Store Connect API** → **Team Keys**, click **+**, name it (e.g. `notarization-ci`), and give it the **Developer** role — that is sufficient for notarization; do not grant Admin. Then:
+   - Download the `AuthKey_XXXXXXXXXX.p8`. **Apple lets you download it exactly once** — if you lose it, revoke the key and make a new one. (The download link may only appear after reloading the page.)
+   - Copy the **Key ID** (the 10-character string in the row).
+   - Copy the **Issuer ID** (the UUID shown above the keys table).
+   - Base64-encode the key file:
+     ```bash
+     base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy
+     ```
+
+3. **Set the six repository secrets:**
+
+   ```bash
+   gh secret set APPLE_CERTIFICATE           # base64 from step 1
+   gh secret set APPLE_CERTIFICATE_PASSWORD  # the .p12 password from step 1
+   gh secret set APPLE_SIGNING_IDENTITY      # e.g. "Developer ID Application: Your Name (TEAMID)"
+   gh secret set APPLE_API_ISSUER            # Issuer ID (UUID) from step 2
+   gh secret set APPLE_API_KEY               # Key ID (10 chars) from step 2
+   gh secret set APPLE_API_KEY_P8            # base64 of the .p8 from step 2
+   ```
+
+   Tip: `gh secret set APPLE_API_KEY_P8 < <(base64 -i AuthKey_XXXXXXXXXX.p8)` avoids putting the key through the clipboard.
+
+   To find your signing identity string: `security find-identity -v -p codesigning | grep "Developer ID Application"`.
+
+4. **Store the `.p8` somewhere safe** (a password manager) and delete it from `~/Downloads` — it is not recoverable from Apple.
+
+5. **All-or-nothing:** setting only some of the six secrets fails the release workflow immediately with a clear error, rather than partway through a 10+ minute build.
+
+6. **Revocation:** if CI is compromised, revoke the key in App Store Connect → Integrations. No personal Apple ID password is involved in this flow.
+
+GitHub-hosted runners wipe `$RUNNER_TEMP` between jobs, but the workflow also explicitly deletes the materialized `.p8` in an `always()` cleanup step — which matters most if you ever move to self-hosted runners.
+
 ### Cutting a Release
 
 ```bash
@@ -166,7 +210,7 @@ When the build finishes, **review the draft release and publish it manually**. P
 
 - **Version bumps** need no secret changes and create no commit on `main` — CI stamps `VITE_APP_VERSION` and the committed version files from the tag.
 - **URL or branding changes**: update your local `.env`, then re-run `gh secret set RELEASE_ENV < .env`.
-- **Code signing**: builds are not notarized (macOS) or Authenticode-signed (Windows) — users see the usual Gatekeeper/SmartScreen warnings. Apple/Windows certificates can be added to the workflow later without structural changes.
+- **Code signing**: by default builds are not notarized (macOS) or Authenticode-signed (Windows) — users see the usual Gatekeeper/SmartScreen warnings. You can opt into signed + notarized macOS builds by setting the optional `APPLE_*` repository secrets described above; Windows certificates can be added later without structural changes.
 
 ## Configuration Behavior
 
