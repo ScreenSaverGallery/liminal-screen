@@ -295,6 +295,57 @@ if (saved != null) {
 }
 ```
 
+### `isMediaActive(): Promise<boolean>`
+
+`true` when another process — a video player, video call, etc. — is holding a
+display-sleep-blocking power assertion. The screensaver engine already treats
+this as user activity and won't activate the saver while it's true; use this
+to tell the user *why* the saver hasn't started instead of leaving them
+thinking it's broken.
+
+macOS only for now: reads IOKit power assertion status
+(`IOPMCopyAssertionsStatus`), excluding Liminal's own `caffeinate -d`
+inhibitor. Always resolves `false` on Windows/Linux, where this detection
+isn't implemented, and outside Tauri. Requires Liminal Screen with the
+`is_media_active` command (unreleased as of app `0.2.0`) — rejects with
+`LiminalAPIError` on older builds.
+
+On its own this only tells you *that* the saver is blocked, not *why* — genuine
+media playback is usually obvious to the user, but a background app holding the
+same kind of assertion (a file-sharing tool, a sync client) is not. Pair it with
+`getMediaBlockerName()` (below) to name the
+process responsible.
+
+```javascript
+setInterval(async () => {
+  const blocked = await liminalAPI.isMediaActive();
+  statusEl.textContent = blocked ? 'Screensaver paused — media is playing' : '';
+}, 5000);
+```
+
+### `getMediaBlockerName(): Promise<string | null>`
+
+Name of the process holding the display-sleep assertion `isMediaActive()`
+detected (e.g. `"LocalSend"`), or `null` if nothing is. Reads `pmset -g
+assertions`' per-process listing, since that's the only place macOS exposes
+the owning process's name (`IOPMCopyAssertionsStatus`, used by
+`isMediaActive()`, only gives system-wide counts) — heavier than
+`isMediaActive()`, so call it only once you already know the saver is
+blocked, not on every poll tick. Excludes Liminal's own `caffeinate -d`
+inhibitor by PID. macOS only for now — always resolves `null` on
+Windows/Linux and outside Tauri. Requires Liminal Screen with the
+`get_media_blocker_name` command (unreleased as of app `0.2.0`) — rejects
+with `LiminalAPIError` on older builds.
+
+```javascript
+if (await liminalAPI.isMediaActive()) {
+  const who = await liminalAPI.getMediaBlockerName();
+  message = who
+    ? `${who} is blocking ${appName} from starting.`
+    : 'Something is blocking the screensaver from starting.';
+}
+```
+
 ### `ask(message: string, options?: Record<string, unknown>): Promise<boolean>`
 
 Show a confirmation dialog. Uses `tauri-plugin-dialog` inside Tauri (native OS dialog), falls back to `window.confirm()` in browsers.

@@ -296,7 +296,7 @@ impl ScreensaverEngine {
         // precedence over real OS idle detection. Always `None` in release.
         let idle_time = match *self.idle_override.lock().unwrap() {
             Some(overridden) => overridden,
-            None => super::power_monitor::get_system_idle_time()
+            None => super::power_monitor::get_effective_idle_time()
                 .map_err(|e| format!("Failed to get idle time: {}", e))?,
         };
 

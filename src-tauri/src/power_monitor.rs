@@ -2,6 +2,7 @@
 //
 // Platform matrix:
 //   macOS   — CGEventSource FFI (idle), IOKit FFI (battery), caffeinate (inhibit),
+//             IOKit power assertions (detect non-HID activity: video, FaceTime),
 //             AppleScript/ScreenSaverEngine/pmset (lock), pmset (blank)
 //   Windows — GetLastInputInfo (idle), GetSystemPowerStatus (battery),
 //             SetThreadExecutionState on a dedicated thread (inhibit),
@@ -47,6 +48,13 @@ impl Default for PowerSaveBlocker {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 static INHIBIT_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
 
+/// Tracks whether the previous tick was blocked by a foreign display-sleep
+/// assertion, so `get_effective_idle_time` only logs (and looks up the
+/// blocking process's name) on the false→true edge, not on every tick of a
+/// blocking episode that might last hours.
+#[cfg(target_os = "macos")]
+static WAS_BLOCKED_BY_MEDIA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 // ─── Commands callable from JavaScript ───────────────────────────────────────
 
 #[command]
@@ -81,6 +89,64 @@ pub fn is_on_battery_power() -> Result<bool, String> {
 
     #[cfg(target_os = "linux")]
     return is_on_battery_linux();
+}
+
+/// Returns true when something other than Liminal is actively preventing display
+/// sleep via an OS power assertion. On macOS this catches video players,
+/// FaceTime, etc. that keep the display alive without HID input, so the
+/// screensaver engine can treat the user as active even though the raw idle
+/// timer is high. Always false on Windows/Linux in this implementation.
+#[command]
+pub fn is_media_active() -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    return is_user_active_via_power_assertions();
+
+    #[cfg(not(target_os = "macos"))]
+    Ok(false)
+}
+
+/// Name of the process (if any) other than Liminal that's holding the
+/// display-sleep assertion `is_media_active` detected. Separate from that
+/// fast IOKit-only check because it shells out to `pmset` for the
+/// human-readable owning-process list — fine for an occasional "why is the
+/// saver blocked?" UI query, too heavy to run every second alongside the
+/// engine's idle-time tick.
+#[command]
+pub fn get_media_blocker_name() -> Result<Option<String>, String> {
+    #[cfg(target_os = "macos")]
+    return Ok(find_media_blocking_process());
+
+    #[cfg(not(target_os = "macos"))]
+    Ok(None)
+}
+
+/// Raw HID idle time plus platform-specific activity signals. On macOS, if
+/// another process holds a `NoDisplaySleep` power assertion, this returns 0
+/// (the user is treated as active). Other platforms fall back to raw idle time.
+pub fn get_effective_idle_time() -> Result<u64, String> {
+    let raw = get_system_idle_time()?;
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::sync::atomic::Ordering;
+
+        if is_user_active_via_power_assertions()? {
+            // Only log (and shell out for the name) on the false→true edge —
+            // this branch can otherwise fire every second for hours.
+            if !WAS_BLOCKED_BY_MEDIA.swap(true, Ordering::Relaxed) {
+                let blocker = find_media_blocking_process();
+                println!(
+                    "macOS: HID idle is {}s but {} holds a display-sleep assertion — treating as active",
+                    raw,
+                    blocker.as_deref().unwrap_or("another process")
+                );
+            }
+            return Ok(0);
+        }
+        WAS_BLOCKED_BY_MEDIA.store(false, Ordering::Relaxed);
+    }
+
+    Ok(raw)
 }
 
 /// Snapshot of the OS-native screensaver configuration. Liminal is meant to be
@@ -435,6 +501,10 @@ extern "C" {
     fn IOPSGetProvidingPowerSourceType(
         snapshot: core_foundation::base::CFTypeRef,
     ) -> core_foundation::string::CFStringRef;
+    /// Return a dictionary mapping assertion-type strings to active counts.
+    /// Used to detect display-sleep assertions held by video players, FaceTime,
+    /// etc. that do not reset the HID idle timer.
+    fn IOPMCopyAssertionsStatus(assertions: *mut core_foundation::base::CFTypeRef) -> i32;
 }
 
 #[cfg(target_os = "macos")]
@@ -452,6 +522,101 @@ fn get_idle_time_macos() -> Result<u64, String> {
 
     // Fallback: parse HIDIdleTime from the IO registry
     get_idle_time_macos_ioreg()
+}
+
+/// True when a process other than Liminal is holding a display-sleep-blocking
+/// power assertion. Video players and video calls keep the display awake this
+/// way without generating HID events, so the raw idle timer would wrongly say
+/// the user is idle. We subtract our own `caffeinate -d` assertion (tracked in
+/// `INHIBIT_CHILD`) so Liminal doesn't count itself as activity.
+#[cfg(target_os = "macos")]
+fn is_user_active_via_power_assertions() -> Result<bool, String> {
+    use core_foundation::base::{CFTypeRef, TCFType};
+    use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::CFString;
+
+    let mut raw: CFTypeRef = std::ptr::null();
+    let result = unsafe { IOPMCopyAssertionsStatus(&mut raw) };
+    if result != 0 {
+        // Could not read assertion status; fail safe and assume not active.
+        return Ok(false);
+    }
+
+    let dict = unsafe {
+        CFDictionary::<CFString, CFNumber>::wrap_under_create_rule(raw as CFDictionaryRef)
+    };
+
+    // The dictionary keys are the actual assertion type names, not the
+    // constant name "NoDisplaySleep" (verified via `pmset -g assertions`).
+    // Video players/calls hold `PreventUserIdleDisplaySleep`; `caffeinate -d`
+    // (Liminal's own inhibitor) shows up under the same key, while some older
+    // tools still register the legacy `NoDisplaySleepAssertion` type.
+    let count_for = |name: &str| -> i64 {
+        dict.find(&CFString::new(name))
+            .and_then(|n| n.to_i64())
+            .unwrap_or(0)
+    };
+    let total = count_for("PreventUserIdleDisplaySleep") + count_for("NoDisplaySleepAssertion");
+
+    // Liminal itself holds a `PreventUserIdleDisplaySleep` assertion while the
+    // saver is shown (via caffeinate -d). Exclude it so we don't self-suppress.
+    let own_assertion = INHIBIT_CHILD.lock().unwrap().is_some();
+    let others = (total - if own_assertion { 1 } else { 0 }).max(0);
+
+    Ok(others > 0)
+}
+
+/// Name of the first process other than Liminal holding a display-sleep
+/// assertion, e.g. "LocalSend". Parses `pmset -g assertions`' per-process
+/// listing rather than the IOKit dictionary used above, because that's the
+/// only place macOS exposes the owning process's name — `IOPMCopyAssertionsStatus`
+/// only gives system-wide counts. A line looks like:
+///   pid 30046(LocalSend): [0x...] 36:24:34 NoDisplaySleepAssertion named: "..."
+#[cfg(target_os = "macos")]
+fn find_media_blocking_process() -> Option<String> {
+    const TARGET_TYPES: [&str; 2] = ["PreventUserIdleDisplaySleep", "NoDisplaySleepAssertion"];
+
+    let own_pid = INHIBIT_CHILD.lock().unwrap().as_ref().map(|c| c.id());
+
+    let output = std::process::Command::new("pmset")
+        .args(["-g", "assertions"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    let mut in_process_section = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Listed by owning process") {
+            in_process_section = true;
+            continue;
+        }
+        if !in_process_section || !trimmed.starts_with("pid ") {
+            continue;
+        }
+
+        let Some(paren_open) = trimmed.find('(') else {
+            continue;
+        };
+        let Some(paren_close) = trimmed[paren_open..].find(')').map(|i| i + paren_open) else {
+            continue;
+        };
+
+        let pid: Option<u32> = trimmed["pid ".len()..paren_open].trim().parse().ok();
+        if pid.is_some() && pid == own_pid {
+            continue; // our own caffeinate -d inhibitor
+        }
+
+        let assertion_part = &trimmed[paren_close..];
+        if TARGET_TYPES.iter().any(|t| assertion_part.contains(t)) {
+            return Some(trimmed[paren_open + 1..paren_close].to_string());
+        }
+    }
+    None
 }
 
 #[cfg(target_os = "macos")]
@@ -729,7 +894,11 @@ fn idle_mutter_dbus() -> Option<u64> {
             "org.gnome.Mutter.IdleMonitor",
         )
         .await?;
-        proxy.call_method("GetIdletime", &()).await?.body().deserialize::<u64>()
+        proxy
+            .call_method("GetIdletime", &())
+            .await?
+            .body()
+            .deserialize::<u64>()
     })
     .map(|ms| ms / 1000)
 }
@@ -975,7 +1144,11 @@ fn os_screensaver_status_linux() -> OsScreensaverStatus {
         Ok(out) if out.status.success() => {
             // Value looks like "uint32 300".
             let raw = String::from_utf8_lossy(&out.stdout);
-            match raw.split_whitespace().last().and_then(|s| s.parse::<u64>().ok()) {
+            match raw
+                .split_whitespace()
+                .last()
+                .and_then(|s| s.parse::<u64>().ok())
+            {
                 Some(0) => OsScreensaverStatus::disabled(),
                 Some(secs) => OsScreensaverStatus::enabled(Some(secs)),
                 None => OsScreensaverStatus::unknown(),
@@ -1100,6 +1273,8 @@ pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
             get_system_idle_time,
             get_system_idle_state,
             is_on_battery_power,
+            is_media_active,
+            get_media_blocker_name,
             get_os_screensaver_status,
             lock_screen,
             blank_screen,
