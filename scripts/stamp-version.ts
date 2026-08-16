@@ -42,7 +42,7 @@ function setCargoVersion(version: string): void {
   }
   writeFileSync(CARGO_TOML_PATH, toml.replace(versionRe, `$1"${version}"`));
 
-  const lock = readFileSync(CARGO_LOCK_PATH, "utf-8");
+  const lock = readFileSync(CARGO_LOCK_PATH, "utf-8").replace(/\r\n/g, "\n");
   const lockRe = new RegExp(
     `(name = "${nameMatch[1]}"\\nversion = )"[^"]*"`,
   );
