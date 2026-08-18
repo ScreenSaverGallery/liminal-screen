@@ -47,12 +47,21 @@
     "category": "Entertainment",
     "shortDescription": "Set VITE_APP_DESCRIPTION in .env",
     "longDescription": "Set VITE_APP_DESCRIPTION in .env",
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "macOS": {
+      "minimumSystemVersion": "10.13"
+    },
+    "linux": {
+      "deb": {
+        "section": "utils",
+        "priority": "optional"
+      }
+    }
   },
   "plugins": {
     "updater": {
       "pubkey": "SET_VITE_UPDATER_PUBKEY_IN_.env",
-      "endpoints": ["SET_VITE_UPDATER_ENDPOINT_IN_.env"],
+      "endpoints": ["https://example.invalid/"],
       "windows": {
         "installMode": "passive"
       }

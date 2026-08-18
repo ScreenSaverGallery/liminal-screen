@@ -2,8 +2,8 @@
 name = "liminal-screen"
 version = "0.2.0"
 description = "A system tray screensaver application built with Tauri v2"
-authors = ["tomaszatoo"]
 edition = "2021"
+license = "Apache-2.0"
 
 [lib]
 name = "liminal_screen_lib"
