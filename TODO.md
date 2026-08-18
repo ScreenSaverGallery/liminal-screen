@@ -7,6 +7,7 @@
 - [ ] notifications: show a confirmation ("hello") notification on the disabled→enabled transition in set_options (lib.rs) — confirms it works, registers the app with the OS notification center, and exposes silent failures. Fire only on false→true, gate on notification_url non-empty. Note: macOS notify-rust (NSUserNotification) posts rather than showing a permission dialog; real behavior only testable in a signed tauri:build, not tauri dev (attributed to Terminal).
 - [x] optional macOS Developer ID code signing + notarization (App Store Connect API key), see: .hermes/plans/macos-codesign-notarization/
 - [x] bundle metadata: publisher/copyright for Linux App Center / Windows + explicit macOS CFBundleName, see .hermes/plans/2026-08-18-bundle-metadata/
+- [x] GitHub release title from VITE_APP_NAME instead of hardcoded "Liminal Screen", see .hermes/plans/2026-08-18-release-title/
 - [ ] Linux store distribution: publish to Flathub and Snap Store, see .hermes/plans/2026-08-18-linux-stores/
 - [ ] security check, see: .hermes/plans/security/PLAN.md
 - [ ] e2e tests, see: .hermes/plans/testing/PLAN.md Part B (unit tests done)
