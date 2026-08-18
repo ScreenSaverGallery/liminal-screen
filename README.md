@@ -241,7 +241,9 @@ Factory reset does two things:
 # Development mode
 `bun run tauri:dev`
 
-# Production build (the script applies --env-file internally; preserves multi-line values like VITE_UPDATER_PUBKEY)
+# Production build 
+(the script applies --env-file internally; preserves multi-line values like VITE_UPDATER_PUBKEY)
+
 `bun run tauri:build`
 
 ## Architecture
@@ -356,6 +358,12 @@ sudo pacman -S speech-dispatcher
 ```
 
 Without it, speech is skipped gracefully (utterances fire `error` events). macOS and Windows use their webviews' native speech synthesis — the polyfill steps aside there.
+
+### GDK Backend on Linux
+
+The app defaults to `GDK_BACKEND=x11` on Linux (set in `src-tauri/src/main.rs`, before any GTK/webkit2gtk init) unless the user has already set `GDK_BACKEND` themselves. WebKitGTK has a history of rendering and DMA-BUF bugs under native Wayland, so on Wayland sessions the app runs through XWayland instead. This costs native Wayland niceties (fractional scaling, lower input latency) but avoids a class of crashes/rendering glitches that are otherwise common for WebKitGTK apps on Wayland today. It doesn't affect idle detection, which already branches on `WAYLAND_DISPLAY`/session type independently (see `power_monitor.rs`).
+
+This is a workaround, not a permanent stance — revisit once wry/WebKitGTK's native Wayland support matures. To opt back into Wayland, set `GDK_BACKEND=wayland` in the environment before launching the app.
 
 ## License
 
