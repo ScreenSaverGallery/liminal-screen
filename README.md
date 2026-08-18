@@ -241,7 +241,9 @@ Factory reset does two things:
 # Development mode
 `bun run tauri:dev`
 
-# Production build (the script applies --env-file internally; preserves multi-line values like VITE_UPDATER_PUBKEY)
+# Production build 
+(the script applies --env-file internally; preserves multi-line values like VITE_UPDATER_PUBKEY)
+
 `bun run tauri:build`
 
 ## Architecture
