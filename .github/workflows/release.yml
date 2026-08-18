@@ -96,6 +96,12 @@ jobs:
             printf 'VITE_APP_VERSION="%s"\n' "$version" >> .env
           fi
 
+          # Export the app name so the GitHub release title matches the fork.
+          app_name=$(grep -E '^VITE_APP_NAME=' .env | sed -E 's/^VITE_APP_NAME="?([^"]*)"?$/\1/')
+          if [ -n "$app_name" ]; then
+            echo "VITE_APP_NAME=$app_name" >> "$GITHUB_ENV"
+          fi
+
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -247,7 +253,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "Liminal Screen ${{ github.ref_name }}"
+          releaseName: "${{ env.VITE_APP_NAME || 'Liminal Screen' }} ${{ github.ref_name }}"
           releaseBody: "See the assets below to download and install this version."
           releaseDraft: true
           args: --config src-tauri/.tauri-runtime.conf.json ${{ matrix.args }}

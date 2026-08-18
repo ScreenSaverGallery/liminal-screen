@@ -6,7 +6,6 @@
 - [x] linux speech synthesis workaround (implemented 2026-07-17; runtime verification on a Linux machine still pending), see: .hermes/plans/linux-speech-synthesis-workaround/
 - [ ] notifications: show a confirmation ("hello") notification on the disabled→enabled transition in set_options (lib.rs) — confirms it works, registers the app with the OS notification center, and exposes silent failures. Fire only on false→true, gate on notification_url non-empty. Note: macOS notify-rust (NSUserNotification) posts rather than showing a permission dialog; real behavior only testable in a signed tauri:build, not tauri dev (attributed to Terminal).
 - [x] optional macOS Developer ID code signing + notarization (App Store Connect API key), see: .hermes/plans/macos-codesign-notarization/
-- [x] bundle metadata: publisher/copyright for Linux App Center / Windows + explicit macOS CFBundleName, see .hermes/plans/2026-08-18-bundle-metadata/
 - [ ] security check, see: .hermes/plans/security/PLAN.md
 - [ ] e2e tests, see: .hermes/plans/testing/PLAN.md Part B (unit tests done)
   - [x] backend test hooks: `debug_set_idle(secs)` injects fake idle time (debug builds only; release stub returns error), `get_screensaver_state()` exposes the full ScreensaverState enum. Lets a test drive idle→saver→display-off→lock deterministically (set small thresholds via set_options + runOnBattery:true, step idle, assert state after ~1s poll settle).
