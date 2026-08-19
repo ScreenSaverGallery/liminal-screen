@@ -32,6 +32,8 @@ VITE_APP_NAME="Your App Name"
 VITE_APP_DESCRIPTION="Your app description here"
 VITE_APP_VERSION="1.0.0"                              # semver
 VITE_APP_IDENTIFIER="com.yourcompany.your-app-name"  # MUST be unique per fork
+VITE_APP_PUBLISHER="Your Org <support@your-domain.com>"  # Linux .deb / Windows Manufacturer
+VITE_APP_COPYRIGHT="© 2026 Your Org"                      # optional bundle metadata
 
 # Screensaver URLs
 VITE_SAVER_URL="https://your-domain.com/screensaver"
@@ -68,6 +70,10 @@ bun --env-file=.env run cargo build
 > Avoid `export $(cat .env | xargs)` — it breaks on multi-line values like the updater PEM.
 
 **Why bundle identifier matters:** If two apps have the same identifier on one system, they'll share preferences, keychain entries, and may crash each other. Each fork MUST use a unique `VITE_APP_IDENTIFIER`.
+
+**Why `VITE_APP_PUBLISHER` matters:** Tauri uses this value for the `.deb` package `Maintainer:` field (shown as the developer in Ubuntu App Center / GNOME Software) and for the Windows installer `Manufacturer`. The Cargo.toml `authors` field is intentionally removed so this env var is the single source of truth. Use `"Name <email>"` format for the best Linux storefront rendering.
+
+**macOS Login Items:** The app name shown in System Settings comes from the bundle's `CFBundleName`, which the build script sets explicitly from `VITE_APP_NAME`. The icon comes from the generated `icon.icns` — make sure your `app-icon.png` (local) or `APP_ICON` CI secret is a valid 1024×1024+ PNG.
 
 **Optional: Customize default timing values:**
 

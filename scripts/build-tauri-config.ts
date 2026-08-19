@@ -4,7 +4,8 @@
 // Reads `.env` and `src-tauri/tauri.conf.json`, then writes a Tauri merge-patch
 // config to `src-tauri/.tauri-runtime.conf.json` (gitignored) that overrides
 // productName, version, identifier, the main window title, bundle descriptions,
-// and the updater pubkey/endpoints from environment variables.
+// publisher/copyright, macOS bundleName, and the updater pubkey/endpoints from
+// environment variables.
 //
 // The generated file is passed to the Tauri CLI via `--config` in package.json
 // (see the `pretauri` lifecycle hook). Tauri merges it into the base
@@ -66,6 +67,38 @@ function main(): void {
       ...(patch.bundle as Record<string, unknown> | undefined),
       shortDescription: env.VITE_APP_DESCRIPTION,
       longDescription: env.VITE_APP_DESCRIPTION,
+    };
+  }
+
+  // Bundle publisher / copyright — drives Windows Manufacturer, Linux .deb
+  // Maintainer, and macOS bundle metadata. Removing Cargo.toml `authors` lets
+  // Tauri use `bundle.publisher` as the single source of truth.
+  if (env.VITE_APP_PUBLISHER) {
+    patch.bundle = {
+      ...(patch.bundle as Record<string, unknown> | undefined),
+      publisher: env.VITE_APP_PUBLISHER,
+    };
+  }
+  if (env.VITE_APP_COPYRIGHT) {
+    patch.bundle = {
+      ...(patch.bundle as Record<string, unknown> | undefined),
+      copyright: env.VITE_APP_COPYRIGHT,
+    };
+  }
+
+  // macOS CFBundleName — explicitly set so System Settings > Login Items and
+  // Finder show the app name rather than falling back to signing identity text.
+  // JSON Merge Patch replaces whole objects, so preserve the existing macOS
+  // config (minimumSystemVersion, dmg defaults, etc.) from the base file.
+  if (env.VITE_APP_NAME) {
+    const macOS =
+      (tauriConf?.bundle?.macOS as Record<string, unknown> | undefined) ?? {};
+    patch.bundle = {
+      ...(patch.bundle as Record<string, unknown> | undefined),
+      macOS: {
+        ...macOS,
+        bundleName: env.VITE_APP_NAME,
+      },
     };
   }
 
