@@ -53,7 +53,8 @@ static INHIBIT_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
 /// blocking process's name) on the false→true edge, not on every tick of a
 /// blocking episode that might last hours.
 #[cfg(target_os = "macos")]
-static WAS_BLOCKED_BY_MEDIA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static WAS_BLOCKED_BY_MEDIA: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 // ─── Commands callable from JavaScript ───────────────────────────────────────
 
@@ -266,12 +267,16 @@ pub fn blank_screen() -> Result<(), String> {
 pub fn unblank_screen() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        if let Err(e) = set_mutter_power_save_mode(0) {
-            println!("Mutter unblank not available: {}", e);
-            return Err(e);
+        match set_mutter_power_save_mode(0) {
+            Ok(_) => {
+                println!("Linux: Display unblanked via Mutter PowerSaveMode");
+                Ok(())
+            }
+            Err(e) => {
+                println!("Mutter unblank not available: {}", e);
+                Err(e)
+            }
         }
-        println!("Linux: Display unblanked via Mutter PowerSaveMode");
-        return Ok(());
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -1030,28 +1035,36 @@ fn blank_screen_linux() -> Result<(), String> {
     // GNOME/Mutter (X11 and Wayland): set PowerSaveMode to 1 to blank all
     // displays immediately. This is the only reliable way to force DPMS off on
     // GNOME Wayland, where XWayland's xset DPMS extension is a stub.
-    if let Err(e) = set_mutter_power_save_mode(1) {
-        println!("Mutter blank not available: {}", e);
-    } else {
-        println!("Linux: Display blanked via Mutter PowerSaveMode");
-        return Ok(());
+    match set_mutter_power_save_mode(1) {
+        Ok(_) => {
+            println!("Linux: Display blanked via Mutter PowerSaveMode");
+            return Ok(());
+        }
+        Err(e) => println!("Mutter blank not available: {}", e),
     }
 
     // KDE Wayland / Plasma.
     if run_ok("kscreen-doctor", &["--dpms", "off"]) {
+        println!("Linux: Display blanked via kscreen-doctor");
         return Ok(());
     }
 
-    // Native X11: real DPMS extension.
-    if run_ok("xset", &["dpms", "force", "off"]) {
+    // Native X11: real DPMS extension. Deliberately skip on Wayland sessions
+    // because XWayland's xset DPMS is a stub that exits success but does nothing.
+    if !is_wayland_session() && run_ok("xset", &["dpms", "force", "off"]) {
+        println!("Linux: Display blanked via xset DPMS");
         return Ok(());
     }
 
     // Legacy screensaver activation (does NOT actually power off the panel).
     if run_ok("xdg-screensaver", &["activate"]) {
+        println!(
+            "Linux: Display blanked via xdg-screensaver activate (legacy, may not power off panel)"
+        );
         return Ok(());
     }
     if run_ok("gnome-screensaver-command", &["-a"]) {
+        println!("Linux: Display blanked via gnome-screensaver-command (legacy, may not power off panel)");
         return Ok(());
     }
 
@@ -1070,14 +1083,15 @@ fn set_mutter_power_save_mode(mode: i32) -> Result<(), String> {
             "org.freedesktop.DBus.Properties",
         )
         .await?;
+        // Properties.Set signature is (ssv): the value must be sent as a
+        // VARIANT, not a raw i32. The old code passed Value::I32 directly,
+        // which Mutter rejects, so blanking silently fell through to the xset
+        // fallback on Wayland (where xset is a no-op stub).
+        let value = zbus::zvariant::Value::new(zbus::zvariant::Value::I32(mode));
         proxy
             .call_method(
                 "Set",
-                &(
-                    "org.gnome.Mutter.DisplayConfig",
-                    "PowerSaveMode",
-                    zbus::zvariant::Value::I32(mode),
-                ),
+                &("org.gnome.Mutter.DisplayConfig", "PowerSaveMode", value),
             )
             .await
             .map(|_| ())
