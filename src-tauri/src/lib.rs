@@ -40,6 +40,9 @@ const MAIN_WINDOW_LABEL: &str = "main";
 /// Store key: the user's OS screensaver idle timeout, saved when Liminal
 /// disables it so it can be restored. Presence also means "Liminal disabled it".
 const OS_SCREENSAVER_PREV_KEY: &str = "osScreensaverPrevIdle";
+/// Store key: the user's selected Windows screensaver executable, saved when
+/// Liminal disables it so the original saver can be restored on Windows.
+const OS_SCREENSAVER_PREV_EXE_KEY: &str = "osScreensaverPrevExe";
 /// Store key: set once the first-run options window has been shown.
 const ONBOARDED_KEY: &str = "onboarded";
 
@@ -1011,10 +1014,27 @@ fn factory_reset_options<R: Runtime>(
     // Undo anything Liminal changed on the system so a reset truly matches a
     // fresh install: restore the OS screensaver if we had disabled it. (clear()
     // below also wipes the onboarding flag, so the next launch re-onboards.)
-    if let Some(prev) = store.get(OS_SCREENSAVER_PREV_KEY).and_then(|v| v.as_u64()) {
+    let prev_idle = store.get(OS_SCREENSAVER_PREV_KEY).and_then(|v| v.as_u64());
+    #[cfg(target_os = "windows")]
+    let prev_exe = store
+        .get(OS_SCREENSAVER_PREV_EXE_KEY)
+        .and_then(|v| v.as_str().map(String::from));
+    if let Some(prev) = prev_idle {
         if prev > 0 {
-            if let Err(e) = power_monitor::set_os_screensaver_idle_direct(prev) {
-                eprintln!("[reset] Could not restore OS screensaver: {}", e);
+            #[cfg(target_os = "windows")]
+            {
+                let exe = prev_exe.as_deref().unwrap_or("");
+                if let Err(e) =
+                    power_monitor::apply_windows_screensaver(true, Some(prev), Some(exe))
+                {
+                    eprintln!("[reset] Could not restore OS screensaver: {}", e);
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                if let Err(e) = power_monitor::set_os_screensaver_idle_direct(prev) {
+                    eprintln!("[reset] Could not restore OS screensaver: {}", e);
+                }
             }
         }
     }
@@ -1027,9 +1047,15 @@ fn factory_reset_options<R: Runtime>(
         let mut current = state.options.lock().unwrap();
         *current = default_options.clone();
     }
-    // Notify all windows (options UI, remote pages via liminal-api)
-    let _ = app.emit("reset-options", ());
-    let _ = app.emit("options-updated", default_options.clone());
+    // Notify all windows (options UI, remote pages via liminal-api).
+    // Emit asynchronously so the IPC response carrying the new options is
+    // delivered before the emit cascade triggers listeners.
+    let app_handle = app.clone();
+    let defaults_for_emit = default_options.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = app_handle.emit("reset-options", ());
+        let _ = app_handle.emit("options-updated", defaults_for_emit);
+    });
     Ok(default_options)
 }
 
@@ -1120,8 +1146,17 @@ fn set_options<R: Runtime>(
         .save()
         .map_err(|e| format!("Failed to save options: {}", e))?;
 
-    // Notify all windows (options UI, remote pages via liminal-api startAutoSync)
-    let _ = app.emit("options-updated", new_options);
+    // Notify all windows (options UI, remote pages via liminal-api startAutoSync).
+    // Emit asynchronously so the IPC response to this command is delivered
+    // before the emit cascade triggers listeners that may issue additional
+    // IPC calls (e.g. checkScreensaverConflict → getOsScreensaverStatus).
+    // Emitting synchronously on the WebView2 thread blocks the response
+    // delivery behind the cascade's IPC round-trips.
+    let app_handle = app.clone();
+    let opts_for_emit = new_options.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = app_handle.emit("options-updated", opts_for_emit);
+    });
 
     Ok(())
 }
@@ -1131,6 +1166,12 @@ fn set_options<R: Runtime>(
 #[tauri::command]
 fn disable_os_screensaver<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let status = power_monitor::get_os_screensaver_status()?;
+
+    // Capture the currently selected Windows screensaver before we clear it,
+    // so restore can put the user's original selection back.
+    #[cfg(target_os = "windows")]
+    let prev_exe = power_monitor::read_selected_screensaver_exe_windows();
+
     power_monitor::set_os_screensaver_disabled_direct()?;
 
     // Remember the prior timeout only when it was actually enabled — this also
@@ -1139,6 +1180,10 @@ fn disable_os_screensaver<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         if let Some(prev) = status.idle_seconds.filter(|s| *s > 0) {
             if let Ok(store) = app.store("options.json") {
                 store.set(OS_SCREENSAVER_PREV_KEY, prev);
+                #[cfg(target_os = "windows")]
+                if let Some(ref exe) = prev_exe {
+                    store.set(OS_SCREENSAVER_PREV_EXE_KEY, exe.clone());
+                }
                 let _ = store.save();
             }
         }
@@ -1154,11 +1199,24 @@ fn restore_os_screensaver<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         .store("options.json")
         .map_err(|e| format!("Failed to open store: {}", e))?;
     let prev = store.get(OS_SCREENSAVER_PREV_KEY).and_then(|v| v.as_u64());
+    #[cfg(target_os = "windows")]
+    let prev_exe = store
+        .get(OS_SCREENSAVER_PREV_EXE_KEY)
+        .and_then(|v| v.as_str().map(String::from));
 
     match prev.filter(|s| *s > 0) {
         Some(secs) => {
-            power_monitor::set_os_screensaver_idle_direct(secs)?;
+            #[cfg(target_os = "windows")]
+            {
+                let exe = prev_exe.as_deref().unwrap_or("");
+                power_monitor::apply_windows_screensaver(true, Some(secs), Some(exe))?;
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                power_monitor::set_os_screensaver_idle_direct(secs)?;
+            }
             store.delete(OS_SCREENSAVER_PREV_KEY);
+            store.delete(OS_SCREENSAVER_PREV_EXE_KEY);
             let _ = store.save();
             Ok(())
         }

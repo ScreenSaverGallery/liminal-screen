@@ -402,7 +402,17 @@ function formatSeconds(secs: number): string {
  *   1. OS screensaver enabled  → amber warning + [Disable] (severe if it wins the race)
  *   2. Liminal disabled it      → info note + [Restore]
  *   3. neither                  → banner hidden
+ *
+ * Debounced so rapid `options-updated` events (e.g. from repeated saves) don't
+ * fire redundant `getOsScreensaverStatus` IPC calls.
  */
+let conflictCheckTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleConflictCheck(delayMs = 300): void {
+  if (conflictCheckTimer) clearTimeout(conflictCheckTimer);
+  conflictCheckTimer = setTimeout(() => void checkScreensaverConflict(), delayMs);
+}
+
 async function checkScreensaverConflict(): Promise<void> {
   if (!conflictWarningElement || !conflictWarningTextElement) return;
 
@@ -528,8 +538,9 @@ window.addEventListener("DOMContentLoaded", () => {
     // Update app identity (title, h1, subtitle, about)
     setIdentity(opts);
 
-    // Re-evaluate OS screensaver conflict (severity depends on startsIn)
-    void checkScreensaverConflict();
+    // Re-evaluate OS screensaver conflict (severity depends on startsIn).
+    // Debounced so repeated `options-updated` events coalesce into one check.
+    scheduleConflictCheck();
   });
 
   // Re-check when the window regains focus — the user may have changed the OS

@@ -1213,43 +1213,117 @@ fn write_gnome_idle_delay(seconds: u64) -> Result<(), String> {
 /// the registry Win32 feature. If the active flag can't be read we report
 /// `detected: false`.
 #[cfg(target_os = "windows")]
+/// Read the Windows screensaver state directly from `HKCU\Control Panel\Desktop`.
+/// Values are normalised because Windows writes them as strings and sometimes
+/// includes leading/trailing whitespace.
+#[cfg(target_os = "windows")]
 fn os_screensaver_status_windows() -> OsScreensaverStatus {
+    // Read HKCU\Control Panel\Desktop directly via the registry API instead
+    // of shelling out to `reg.exe`. Each `reg.exe` subprocess spawn from an
+    // unsigned binary triggers Windows Defender Block-at-First-Sight, which
+    // blocks ~2s per spawn for a cloud reputation check. Three `reg query`
+    // calls cost ~6s total — the root cause of the set_options freeze.
+    // Direct RegQueryValueExW calls complete in <1ms with no subprocess.
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+    use winreg::RegKey;
+
     fn read_value(value: &str) -> Option<String> {
-        let out = std::process::Command::new("reg")
-            .args(["query", "HKCU\\Control Panel\\Desktop", "/v", value])
-            .output()
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let desktop = hkcu
+            .open_subkey_with_flags("Control Panel\\Desktop", KEY_READ)
             .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        // Line looks like: "    ScreenSaveTimeOut    REG_SZ    600"
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        stdout
-            .lines()
-            .find(|l| l.contains(value))
-            .and_then(|l| l.split_whitespace().last().map(str::to_string))
+        desktop
+            .get_value::<String, _>(value)
+            .ok()
+            .map(|s| s.trim().to_lowercase())
     }
 
-    match read_value("ScreenSaveActive") {
-        Some(active) if active == "1" => {
+    let active = read_value("ScreenSaveActive");
+    let exe = read_value("SCRNSAVE.EXE").filter(|s| !s.is_empty());
+
+    match active.as_deref() {
+        Some("1") if exe.is_some() => {
             let secs = read_value("ScreenSaveTimeOut").and_then(|v| v.parse::<u64>().ok());
             OsScreensaverStatus::enabled(secs.filter(|s| *s > 0))
+        }
+        Some("1") => {
+            // Active flag is on but no saver is selected — treat as disabled
+            // because nothing will actually run.
+            OsScreensaverStatus::disabled()
         }
         Some(_) => OsScreensaverStatus::disabled(),
         None => OsScreensaverStatus::unknown(),
     }
 }
 
-/// Toggle the screensaver via `SystemParametersInfoW` — takes effect immediately
-/// and persists to the user's profile (`SPIF_UPDATEINIFILE`). When enabling, an
-/// optional timeout (seconds) is applied too.
+/// Read the currently selected screen saver executable from the registry.
 #[cfg(target_os = "windows")]
-fn set_screensaver_active_windows(active: bool, timeout: Option<u64>) -> Result<(), String> {
+pub(crate) fn read_selected_screensaver_exe_windows() -> Option<String> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let desktop = hkcu
+        .open_subkey_with_flags("Control Panel\\Desktop", KEY_READ)
+        .ok()?;
+    desktop
+        .get_value::<String, _>("SCRNSAVE.EXE")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Apply the Windows screensaver state directly to `HKCU\Control Panel\Desktop`
+/// and broadcast the change so already-open Settings dialogs refresh.
+///
+/// - `timeout` is written when `Some`.
+/// - `screensaver_exe` is `Some(path)` to set the selected saver, `Some("")`
+///   to delete it (i.e. "(None)"), or `None` to leave it untouched.
+#[cfg(target_os = "windows")]
+pub(crate) fn apply_windows_screensaver(
+    active: bool,
+    timeout: Option<u64>,
+    screensaver_exe: Option<&str>,
+) -> Result<(), String> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_WRITE};
+    use winreg::RegKey;
+
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
-        SystemParametersInfoW, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SPI_SETSCREENSAVEACTIVE,
-        SPI_SETSCREENSAVETIMEOUT,
+        SendNotifyMessageW, SystemParametersInfoW, HWND_BROADCAST, SPIF_SENDCHANGE,
+        SPIF_UPDATEINIFILE, SPI_SETSCREENSAVEACTIVE, SPI_SETSCREENSAVETIMEOUT, WM_SETTINGCHANGE,
     };
 
+    // 1. Write to the registry first so the values are canonical.
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let (desktop, _) = hkcu
+        .create_subkey_with_flags("Control Panel\\Desktop", KEY_WRITE)
+        .map_err(|e| format!("Failed to open Control Panel\\Desktop for write: {}", e))?;
+
+    desktop
+        .set_value("ScreenSaveActive", &if active { "1" } else { "0" })
+        .map_err(|e| format!("Failed to set ScreenSaveActive: {}", e))?;
+
+    if let Some(exe) = screensaver_exe {
+        if exe.is_empty() {
+            // Deleting the value is more reliable than writing an empty string:
+            // the legacy Screen Saver Settings dialog treats a missing/empty
+            // SCRNSAVE.EXE as "(None)" and will not run any saver.
+            let _ = desktop.delete_value("SCRNSAVE.EXE");
+        } else {
+            desktop
+                .set_value("SCRNSAVE.EXE", &exe)
+                .map_err(|e| format!("Failed to set SCRNSAVE.EXE: {}", e))?;
+        }
+    }
+
+    if let Some(secs) = timeout {
+        desktop
+            .set_value("ScreenSaveTimeOut", &secs.to_string())
+            .map_err(|e| format!("Failed to set ScreenSaveTimeOut: {}", e))?;
+    }
+
+    // 2. Use SystemParametersInfo so Windows re-reads the values and notifies
+    //    running processes (including the legacy Screen Saver Settings dialog).
     unsafe {
         SystemParametersInfoW(
             SPI_SETSCREENSAVEACTIVE,
@@ -1259,19 +1333,74 @@ fn set_screensaver_active_windows(active: bool, timeout: Option<u64>) -> Result<
         )
         .map_err(|e| format!("SPI_SETSCREENSAVEACTIVE failed: {}", e))?;
 
-        if active {
-            if let Some(secs) = timeout {
-                SystemParametersInfoW(
-                    SPI_SETSCREENSAVETIMEOUT,
-                    secs as u32,
-                    None,
-                    SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
-                )
-                .map_err(|e| format!("SPI_SETSCREENSAVETIMEOUT failed: {}", e))?;
-            }
+        if let Some(secs) = timeout {
+            SystemParametersInfoW(
+                SPI_SETSCREENSAVETIMEOUT,
+                secs as u32,
+                None,
+                SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
+            )
+            .map_err(|e| format!("SPI_SETSCREENSAVETIMEOUT failed: {}", e))?;
         }
     }
+
+    // 3. Explicitly broadcast WM_SETTINGCHANGE for the Desktop section. This is
+    //    needed for changes to SCRNSAVE.EXE and ensures already-open Settings
+    //    dialogs refresh instead of showing stale values.
+    let desktop_section: Vec<u16> = "Control Panel\\Desktop\0".encode_utf16().collect();
+    unsafe {
+        let _ = SendNotifyMessageW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            WPARAM(0),
+            LPARAM(desktop_section.as_ptr() as isize),
+        );
+    }
+
+    // 4. Read back for diagnostics only. We re-open the key to avoid any
+    //    handle-caching issues, and we do NOT error if the value differs:
+    //    SystemParametersInfoW with SPIF_UPDATEINIFILE can win.ini-sync
+    //    asynchronously, and the OS dialog already proves the change applied.
+    use winreg::enums::KEY_READ;
+    match hkcu.open_subkey_with_flags("Control Panel\\Desktop", KEY_READ) {
+        Ok(desktop_ro) => {
+            let active_back = desktop_ro
+                .get_value::<String, _>("ScreenSaveActive")
+                .unwrap_or_default();
+            let exe_back = desktop_ro
+                .get_value::<String, _>("SCRNSAVE.EXE")
+                .unwrap_or_default();
+            let timeout_back = desktop_ro
+                .get_value::<String, _>("ScreenSaveTimeOut")
+                .unwrap_or_default();
+            let expected = if active { "1" } else { "0" };
+            if active_back.trim() != expected {
+                eprintln!(
+                    "[screensaver] warning: ScreenSaveActive read-back mismatch (expected {}, got {:?})",
+                    expected, active_back
+                );
+            } else {
+                eprintln!(
+                    "[screensaver] applyWindowsScreensaver active={} -> ScreenSaveActive={} SCRNSAVE.EXE={:?} ScreenSaveTimeOut={}",
+                    active, active_back, exe_back, timeout_back
+                );
+            }
+        }
+        Err(e) => eprintln!(
+            "[screensaver] warning: could not read back screensaver state: {}",
+            e
+        ),
+    }
+
     Ok(())
+}
+
+/// Toggle the screensaver via `SystemParametersInfoW` — takes effect immediately
+/// and persists to the user's profile (`SPIF_UPDATEINIFILE`). When enabling, an
+/// optional timeout (seconds) is applied too.
+#[cfg(target_os = "windows")]
+fn set_screensaver_active_windows(active: bool, timeout: Option<u64>) -> Result<(), String> {
+    apply_windows_screensaver(active, timeout, if active { None } else { Some("") })
 }
 
 // ─── Plugin initialization ────────────────────────────────────────────────────

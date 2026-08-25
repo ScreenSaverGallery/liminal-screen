@@ -44,6 +44,10 @@ windows = { version = "0.62", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# Direct registry reads — avoids `reg.exe` subprocess spawns that trigger Windows
+# Defender Block-at-First-Sight cloud reputation checks on unsigned binaries
+# (each spawn blocked ~2s, 3 reads per status check = ~6s freeze on set_options).
+winreg = "0.55"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
